@@ -1,0 +1,31 @@
+# Maintainer: laghab
+pkgname=photto
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Swipe through photos, videos and files Tinder-style: keep, favorite or trash"
+arch=('any')
+url="https://github.com/laghab/photto"
+license=('MIT')
+depends=('python' 'python-gobject' 'webkit2gtk-4.1' 'glib2')
+optdepends=('ffmpeg: video thumbnails and info'
+            'ffmpegthumbnailer: faster video thumbnails'
+            'poppler: PDF thumbnails and pages'
+            'imagemagick: HEIC/RAW/TIFF photos'
+            'libvips: faster image thumbnails'
+            'libreoffice-fresh: previews of Office documents'
+            'gst-plugins-good: more video formats in the native window'
+            'gst-libav: more video formats in the native window')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm644 photto.py "$pkgdir/usr/lib/photto/photto.py"
+  cp -r static "$pkgdir/usr/lib/photto/"
+  install -dm755 "$pkgdir/usr/bin"
+  printf '#!/bin/sh\nexec python3 /usr/lib/photto/photto.py "$@"\n' > "$pkgdir/usr/bin/photto"
+  chmod 755 "$pkgdir/usr/bin/photto"
+  install -Dm644 data/photto.desktop "$pkgdir/usr/share/applications/photto.desktop"
+  install -Dm644 data/photto.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/photto.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

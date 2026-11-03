@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>photto</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect x='14' y='18' width='62' height='74' rx='12' fill='%23ffb86b' transform='rotate(-10 45 55)'/><rect x='26' y='10' width='62' height='74' rx='12' fill='%23f4efe6'/></svg>">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="grain"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo"><i></i><i></i></span>
+    <div>
+      <h1>photto</h1>
+      <button id="folderBtn" class="folder" title="Change folder (G)">
+        <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        <span id="folder">—</span><em id="scopeTag"></em><i>▾</i>
+      </button>
+    </div>
+  </div>
+
+  <nav id="filters" class="filters" aria-label="File type"></nav>
+
+  <div class="top-right">
+    <select id="sort" aria-label="Order">
+      <option value="shuffle">Shuffle</option>
+      <option value="newest">Newest first</option>
+      <option value="oldest">Oldest first</option>
+      <option value="largest">Largest first</option>
+      <option value="name">By name</option>
+    </select>
+    <button id="reviewBtn" class="review-btn" title="Review (R)">
+      <span>Review</span>
+      <b id="delCount">0</b>
+    </button>
+  </div>
+</header>
+
+<main class="stage">
+  <div class="progress"><div id="progressBar"></div></div>
+  <p id="progressText" class="progress-text"></p>
+
+  <div id="deck" class="deck"></div>
+  <div id="scanning" class="scanning hidden"><div class="loading"></div><p>Scanning files…</p></div>
+
+  <div id="welcome" class="empty welcome hidden">
+    <div class="empty-art"><span></span><span></span><span></span></div>
+    <h2>Pick a folder to tidy</h2>
+    <p>Swipe through every photo, video, song and document in it — keep, favorite or trash.</p>
+    <div class="empty-actions"><button id="welcomePick" class="btn primary">Choose folder…</button></div>
+    <div id="welcomeRecent" class="recent"></div>
+  </div>
+
+  <div id="empty" class="empty hidden">
+    <div class="empty-art"><span></span><span></span><span></span></div>
+    <h2 id="emptyTitle">All caught up</h2>
+    <p id="emptyText">You've gone through everything in this view.</p>
+    <div class="empty-actions">
+      <button id="emptyReview" class="btn primary">Review &amp; clean up</button>
+      <button id="emptyRestart" class="btn ghost">Start over</button>
+      <button id="emptyPick" class="btn ghost">Pick another folder</button>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="bUndo" class="ctl small" title="Undo (Z)"><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+    <button id="bDelete" class="ctl del" title="Delete (←)"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    <button id="bFav" class="ctl fav" title="Favorite (↑)"><svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/></svg></button>
+    <button id="bKeep" class="ctl keep" title="Keep (→)"><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></button>
+    <button id="bSkip" class="ctl small" title="Decide later (↓)"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg></button>
+  </div>
+
+  <p class="hint">
+    <kbd>←</kbd> delete <kbd>→</kbd> keep <kbd>↑</kbd> favorite <kbd>↓</kbd> later
+    <kbd>Z</kbd> undo <kbd>Enter</kbd> full view <kbd>O</kbd> open <kbd>Space</kbd> play <kbd>G</kbd> folder
+  </p>
+</main>
+
+<!-- full viewer -->
+<div id="viewer" class="viewer hidden">
+  <div class="viewer-bar">
+    <span id="viewerName"></span>
+    <div>
+      <button id="viewerOpen" class="btn ghost sm">Open in app</button>
+      <button id="viewerFolder" class="btn ghost sm">Show in folder</button>
+      <button id="viewerClose" class="btn ghost sm">Close <kbd>Esc</kbd></button>
+    </div>
+  </div>
+  <div id="viewerBody" class="viewer-body"></div>
+</div>
+
+<!-- review -->
+<div id="review" class="review hidden">
+  <div class="review-panel">
+    <div class="review-head">
+      <div>
+        <h2>Review</h2>
+        <p class="muted">Tap a file to change your mind. Nothing is gone until you press the button — and even then it goes to the Trash.</p>
+      </div>
+      <button id="reviewClose" class="btn ghost sm">Close <kbd>Esc</kbd></button>
+    </div>
+    <div class="tabs" id="reviewTabs">
+      <button data-tab="delete" class="on">To delete <b id="tDel">0</b></button>
+      <button data-tab="favorite">Favorites <b id="tFav">0</b></button>
+      <button data-tab="keep">Kept <b id="tKeep">0</b></button>
+    </div>
+    <div id="reviewGrid" class="grid"></div>
+    <div class="review-foot">
+      <label class="check"><input type="checkbox" id="favMove"> Move favorites into <code>Favorites/</code></label>
+      <div class="foot-right">
+        <span id="freeText" class="muted"></span>
+        <button id="commitBtn" class="btn danger">Move to Trash</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- folder picker -->
+<div id="picker" class="review hidden">
+  <div class="review-panel picker-panel">
+    <div class="review-head">
+      <div>
+        <h2>Pick a folder</h2>
+        <p class="muted">Choose what to sort. Your marks are saved per folder.</p>
+      </div>
+      <button id="pickerClose" class="btn ghost sm">Close <kbd>Esc</kbd></button>
+    </div>
+    <div class="picker-body">
+      <aside id="places" class="places"></aside>
+      <section class="browse">
+        <form id="pathForm" class="pathbar">
+          <button type="button" id="upBtn" class="btn ghost sm" title="Up one level">↑</button>
+          <input id="pathInput" spellcheck="false" autocomplete="off">
+          <button type="submit" class="btn ghost sm">Go</button>
+        </form>
+        <div id="dirList" class="dirlist"></div>
+      </section>
+    </div>
+    <div class="review-foot">
+      <div class="foot-left">
+        <label class="check"><input type="checkbox" id="recursiveBox" checked> Include subfolders</label>
+        <button id="nativePick" class="btn ghost sm">System dialog…</button>
+      </div>
+      <button id="pickBtn" class="btn primary">Open this folder</button>
+    </div>
+  </div>
+</div>
+
+<div id="gone" class="gone hidden"><div><h2>photto has stopped</h2><p class="muted">The background process quit. Start photto again to keep going — your marks are saved.</p></div></div>
+
+<div id="toast" class="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
