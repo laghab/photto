@@ -115,10 +115,11 @@ adb("install", "-r", "-g", APK)
 adb("shell", "appops", "set", "--uid", PKG, "MANAGE_EXTERNAL_STORAGE", "deny", check=False)
 adb("shell", "am", "start", "-W", "-n", f"{PKG}/.MainActivity", "--es", "photto.test.token", TOKEN,
     "--ei", "photto.test.port", str(PORT))
-time.sleep(6)
+time.sleep(12)
 adb("forward", f"tcp:{PORT}", f"tcp:{PORT}")
 st, h, body = req("/api/files")
 check(json.loads(body).get("needsPermission") is True, "without access the app asks for permission")
+time.sleep(2)
 shot("01-permission")
 
 # ------------------------------------------------- 2. with permission + folder
@@ -200,6 +201,8 @@ time.sleep(1)
 
 # ------------------------------------------------- 5. trash with system dialog
 doomed = swiped[0]
+extra = "doc.pdf" if doomed == "notes.md" else "notes.md"  # a non-media file too
+req("/api/decide", {"path": extra, "decision": "delete"})
 holder = {}
 t = threading.Thread(target=lambda: holder.update(r=req("/api/commit", {}, timeout=120)))
 t.start()
@@ -210,12 +213,13 @@ print("tapped:", tapped)
 t.join(90)
 res = json.loads(holder["r"][2]) if "r" in holder else {}
 print("commit:", res)
-check(res.get("trashed") == [doomed], "commit moves the file to Android's trash")
+check(sorted(res.get("trashed", [])) == sorted([doomed, extra]), "commit trashes a media file and a text file")
 ls = adb("shell", "ls", f"{DEV}/{Path(doomed).parent.as_posix()}", check=False)
-check(Path(doomed).name not in ls.split(), "file no longer visible in its folder")
+check(Path(doomed).name not in ls.split() and extra not in adb("shell", "ls", DEV, check=False).split(), "files no longer visible in their folder")
 time.sleep(1)
 shot("08-after-commit")
 
+(OUT / "logcat.txt").write_text(adb("logcat", "-d", "-s", "photto:*", "photto-js:*", "AndroidRuntime:E", check=False))
 print(f"\n{sum(c for c, _ in results)}/{len(results)} checks passed")
 (OUT / "results.txt").write_text("\n".join(("PASS " if c else "FAIL ") + m for c, m in results))
 if not all(c for c, _ in results):

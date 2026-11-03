@@ -35,7 +35,7 @@ class Api(private val act: MainActivity, private val token: String) {
             "hpp", "java", "kt", "rb", "php", "sh", "bash", "lua", "sql", "tex", "srt", "vtt", "vcf", "nomedia")
         val DOC = setOf("doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "ppt", "pptx", "odp", "epub")
         val ARCHIVE = setOf("zip", "tar", "gz", "tgz", "xz", "bz2", "zst", "7z", "rar", "iso", "apk", "apks", "xapk")
-        val SKIP_DIRS = setOf(".git", "node_modules", "__pycache__", ".thumbnails", ".Trash", "LOST.DIR")
+        val SKIP_DIRS = setOf(".git", "node_modules", "__pycache__", ".thumbnails", ".Trash", "LOST.DIR", MainActivity.TRASH_DIR)
         val STATIC_TYPES = mapOf("html" to "text/html; charset=utf-8", "js" to "text/javascript", "css" to "text/css")
     }
 

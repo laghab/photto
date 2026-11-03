@@ -2,6 +2,8 @@ package io.github.laghab.photto
 
 import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.Color
@@ -141,38 +143,70 @@ class MainActivity : Activity() {
         MediaScannerConnection.scanFile(this, files.map { it.absolutePath }.toTypedArray(), null, null)
     }
 
-    /** Find (or create, by scanning) the MediaStore entry for a file. */
-    private fun mediaUri(f: File): Uri? {
+    /** MediaStore entry for a file (scanning it in if needed): typed URI for photos/videos/audio. */
+    private fun mediaUri(f: File): Pair<Uri, Boolean>? {
         val files = MediaStore.Files.getContentUri("external")
-        fun query(): Uri? = contentResolver.query(files, arrayOf(MediaStore.MediaColumns._ID),
+        fun query(): Pair<Uri, Boolean>? = contentResolver.query(files,
+            arrayOf(MediaStore.MediaColumns._ID, MediaStore.Files.FileColumns.MEDIA_TYPE),
             "${MediaStore.MediaColumns.DATA}=?", arrayOf(f.absolutePath), null)?.use { c ->
-            if (c.moveToFirst()) Uri.withAppendedPath(files, c.getLong(0).toString()) else null
+            if (!c.moveToFirst()) return@use null
+            val id = c.getLong(0)
+            val collection = when (c.getInt(1)) {
+                MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE -> MediaStore.Images.Media.getContentUri("external")
+                MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO -> MediaStore.Video.Media.getContentUri("external")
+                MediaStore.Files.FileColumns.MEDIA_TYPE_AUDIO -> MediaStore.Audio.Media.getContentUri("external")
+                else -> null
+            }
+            if (collection != null) ContentUris.withAppendedId(collection, id) to true
+            else ContentUris.withAppendedId(files, id) to false
         }
         query()?.let { return it }
         val latch = CountDownLatch(1)
-        var scanned: Uri? = null
-        MediaScannerConnection.scanFile(this, arrayOf(f.absolutePath), null) { _, uri -> scanned = uri; latch.countDown() }
+        MediaScannerConnection.scanFile(this, arrayOf(f.absolutePath), null) { _, _ -> latch.countDown() }
         latch.await(15, TimeUnit.SECONDS)
-        return query() ?: scanned
+        return query()
+    }
+
+    /** Last resort for files Android won't trash: move them into a visible "photto trash" folder. */
+    private fun moveToPhottoTrash(f: File): String? {
+        val storage = Environment.getExternalStorageDirectory()
+        val rel = if (f.absolutePath.startsWith(storage.absolutePath + "/")) f.parentFile!!.relativeTo(storage).path else "other"
+        val destDir = File(File(storage, TRASH_DIR), rel).apply { mkdirs() }
+        var dest = File(destDir, f.name); var i = 1
+        while (dest.exists()) { dest = File(destDir, "${f.nameWithoutExtension} ($i).${f.extension}"); i++ }
+        return if (f.renameTo(dest)) { rescan(listOf(f, dest)); null } else "couldn't move the file"
     }
 
     /**
-     * Move files to Android's system trash (restorable for ~30 days from Files / Photos apps).
-     * Android asks the user to confirm once per batch. Returns file -> error (null = trashed).
+     * Move files to Android's system trash (restorable for ~30 days in Files / Photos).
+     * Photos, videos and audio need one confirmation dialog per batch; other files are trashed via
+     * MediaStore directly when allowed, else moved to the "photto trash" folder.
+     * Returns file -> error (null = success).
      */
     fun trashFiles(files: List<File>): Map<File, String?> {
         val result = HashMap<File, String?>()
-        val uris = LinkedHashMap<File, Uri>()
+        val media = LinkedHashMap<File, Uri>()
         for (f in files) {
-            val u = mediaUri(f)
-            if (u == null) result[f] = "Android's media index doesn't know this file" else uris[f] = u
+            val found = mediaUri(f)
+            when {
+                found == null -> result[f] = moveToPhottoTrash(f)
+                found.second -> media[f] = found.first
+                else -> {
+                    val ok = try {
+                        contentResolver.update(found.first, ContentValues().apply {
+                            put(MediaStore.MediaColumns.IS_TRASHED, 1)
+                        }, null, null) > 0 && !f.exists()
+                    } catch (e: Exception) { Log.i("photto", "direct trash refused: ${e.message}"); false }
+                    result[f] = if (ok) null else moveToPhottoTrash(f)
+                }
+            }
         }
-        if (uris.isNotEmpty()) {
+        if (media.isNotEmpty()) {
             val latch = CountDownLatch(1)
             trashLatch = latch
             trashResult = RESULT_CANCELED
             try {
-                val pi = MediaStore.createTrashRequest(contentResolver, uris.values.toList(), true)
+                val pi = MediaStore.createTrashRequest(contentResolver, media.values.toList(), true)
                 runOnUiThread {
                     try {
                         startIntentSenderForResult(pi.intentSender, REQ_TRASH, null, 0, 0, 0)
@@ -183,11 +217,11 @@ class MainActivity : Activity() {
                 latch.await(10, TimeUnit.MINUTES)
             } catch (e: Exception) {
                 Log.w("photto", "createTrashRequest failed", e)
-                uris.keys.forEach { result[it] = e.message ?: "Android refused to trash this file" }
+                media.keys.forEach { result[it] = e.message ?: "Android refused to trash this file" }
                 return result
             }
             val okd = trashResult == RESULT_OK
-            for (f in uris.keys) result[f] = if (!f.exists()) null else if (okd) "still there after trashing" else "cancelled"
+            for (f in media.keys) result[f] = if (!f.exists()) null else if (okd) "still there after trashing" else "cancelled"
         }
         return result
     }
@@ -202,5 +236,8 @@ class MainActivity : Activity() {
         }
     }
 
-    companion object { private const val REQ_TRASH = 42 }
+    companion object {
+        private const val REQ_TRASH = 42
+        const val TRASH_DIR = "photto trash"
+    }
 }

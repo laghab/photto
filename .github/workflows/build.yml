@@ -44,7 +44,7 @@ jobs:
         run: |
           pip install pyinstaller==6.11.1
           pyinstaller --noconfirm --onefile --windowed --name photto --icon data/photto.ico --add-data "static;static" photto.py
-          pyinstaller --noconfirm --onedir --windowed --name photto --icon data/photto.ico --add-data "static;static" --distpath build photto.py
+          pyinstaller --noconfirm --onedir --windowed --name photto --icon data/photto.ico --add-data "static;static" --distpath bundle --workpath build-onedir photto.py
       - name: Smoke test on Windows
         run: python packaging/windows/smoke_test.py dist\photto.exe
       - name: Build installer
@@ -52,7 +52,7 @@ jobs:
           if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup --no-progress -y }
           $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
           if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
-          & $iscc /DAppVersion=${{ steps.v.outputs.version }} /DSourceDir=..\..\build\photto packaging\windows\photto.iss
+          & $iscc /DAppVersion=${{ steps.v.outputs.version }} /DSourceDir=..\..\bundle\photto packaging\windows\photto.iss
       - name: Test installer (silent install, launch, uninstall)
         shell: pwsh
         run: |
@@ -146,7 +146,7 @@ jobs:
           script: python3 android/ci/emulator_checks.py
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: android-screenshots, path: test-output/*.png }
+        with: { name: android-screenshots, path: "test-output/*.png\ntest-output/*.txt" }
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: android-results, path: test-output/results.txt }
