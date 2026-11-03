@@ -909,7 +909,7 @@ def main() -> None:
     if sys.stdout.isatty() or mode == "none":
         print(f"\n  \033[1mphotto\033[0m  ·  {root or 'pick a folder'}")
         print(f"  {url}")
-        print("  close the window or press Ctrl+C to quit\n")
+        print("  close the window or press Ctrl+C to quit\n", flush=True)
 
     if mode == "native":
         threading.Thread(target=srv.serve_forever, daemon=True).start()
