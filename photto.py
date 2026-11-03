@@ -33,7 +33,7 @@ MAX_FILES = 100_000
 IS_WIN = os.name == "nt"
 FROZEN = getattr(sys, "frozen", False)  # PyInstaller build
 APP_DIR = Path(__file__).resolve().parent
-STATIC = Path(getattr(sys, "_MEIPASS", APP_DIR)) / "static"
+STATIC = (Path(getattr(sys, "_MEIPASS", APP_DIR)) / "static").resolve()  # resolve: _MEIPASS may be an 8.3 path
 if IS_WIN:
     _local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "photto"
     CACHE, STATE_DIR = _local / "cache", _local / "state"

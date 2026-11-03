@@ -375,5 +375,7 @@ body[data-platform="android"] .hint { display: none; }
   .pages { padding: 10px; }
 }
 
-/* the card handles all pointer input; stops images/videos from hijacking touch drags */
+/* the card handles all pointer input; stop images/videos and inner scroll boxes from
+   hijacking touch drags (overflow:hidden makes .media a scroller, which resets touch-action) */
 .media img, .media video { pointer-events: none; }
+.card, .card * { touch-action: none; }

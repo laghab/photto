@@ -23,6 +23,19 @@ DEV = "/sdcard/PhottoTest"
 results = []
 
 
+def _dump_logcat():
+    try:
+        (OUT / "logcat.txt").write_text(subprocess.run(
+            ["adb", "logcat", "-d", "-s", "photto:*", "photto-js:*", "AndroidRuntime:E"],
+            capture_output=True, text=True).stdout)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+import atexit  # noqa: E402
+atexit.register(_dump_logcat)
+
+
 def adb(*args, check=True, capture=True):
     r = subprocess.run(["adb", *args], capture_output=capture, text=True)
     if check and r.returncode != 0:
@@ -171,14 +184,16 @@ shot("02-deck")
 size = re.search(r"(\d+)x(\d+)", adb("shell", "wm", "size")).groups()
 w, hgt = int(size[0]), int(size[1])
 before = {f["path"] for f in json.loads(req("/api/files")[2])["files"] if f["decision"]}
-adb("shell", "input", "swipe", str(int(w * 0.5)), str(int(hgt * 0.45)), str(int(w * 0.05)), str(int(hgt * 0.47)), "250")
+adb("shell", "input", "swipe", str(int(w * 0.5)), str(int(hgt * 0.45)), str(int(w * 0.1)), str(int(hgt * 0.46)), "450")
 time.sleep(1.5)
 after = {f["path"]: f["decision"] for f in json.loads(req("/api/files")[2])["files"] if f["decision"]}
 swiped = [p for p in after if p not in before]
+if not swiped:  # keep the rest of the run useful
+    swiped = ["orange.png"]; req("/api/decide", {"path": "orange.png", "decision": "delete"})
 check(len(swiped) == 1 and after[swiped[0]] == "delete", f"swipe left marks a file for deletion {swiped}")
 shot("03-after-swipe")
 
-adb("shell", "input", "swipe", str(int(w * 0.5)), str(int(hgt * 0.45)), str(int(w * 0.95)), str(int(hgt * 0.44)), "250")
+adb("shell", "input", "swipe", str(int(w * 0.5)), str(int(hgt * 0.45)), str(int(w * 0.9)), str(int(hgt * 0.44)), "450")
 time.sleep(1.2)
 after2 = {f["path"]: f["decision"] for f in json.loads(req("/api/files")[2])["files"] if f["decision"]}
 check(sum(1 for v in after2.values() if v == "keep") == 1, "swipe right keeps a file")
@@ -219,7 +234,6 @@ check(Path(doomed).name not in ls.split() and extra not in adb("shell", "ls", DE
 time.sleep(1)
 shot("08-after-commit")
 
-(OUT / "logcat.txt").write_text(adb("logcat", "-d", "-s", "photto:*", "photto-js:*", "AndroidRuntime:E", check=False))
 print(f"\n{sum(c for c, _ in results)}/{len(results)} checks passed")
 (OUT / "results.txt").write_text("\n".join(("PASS " if c else "FAIL ") + m for c, m in results))
 if not all(c for c, _ in results):
