@@ -115,6 +115,10 @@ for name in ("clip.mp4", "tone.mp3", "photo.jpg"):
     if src.exists():
         (fx / name).write_bytes(src.read_bytes())
 
+for _ in range(60):  # shared storage mounts a little after boot
+    if subprocess.run(["adb", "shell", "touch /sdcard/.photto-ready && rm /sdcard/.photto-ready"]).returncode == 0:
+        break
+    time.sleep(2)
 adb("shell", "rm", "-rf", DEV, check=False)
 adb("shell", "mkdir", "-p", DEV)
 for f in fx.rglob("*"):

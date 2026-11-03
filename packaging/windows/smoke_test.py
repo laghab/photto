@@ -83,8 +83,11 @@ try:
     names = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True).stdout
     check("doomed-photto-file" in names, "file is in the Recycle Bin")
 finally:
-    proc.terminate()
+    # a one-file exe is a bootloader plus a child process: kill the whole tree
+    subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
 
+PORT += 1
+BASE = f"http://127.0.0.1:{PORT}"
 # GUI mode: launching with no folder must open the picker flow, not scan anything.
 proc = subprocess.Popen([EXE, "--window", "none", "--port", str(PORT), "--token", TOKEN])
 try:
@@ -96,5 +99,5 @@ try:
             time.sleep(0.5)
     check(json.loads(body).get("needsPick") is True, "no-argument launch starts with the folder picker")
 finally:
-    proc.terminate()
+    subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
 print("all Windows checks passed")
