@@ -1,6 +1,6 @@
 # Maintainer: laghab
 pkgname=photto
-pkgver=1.0.1
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Swipe through photos, videos and files Tinder-style: keep, favorite or trash"
 arch=('any')
@@ -16,7 +16,7 @@ optdepends=('ffmpeg: video thumbnails and info'
             'gst-plugins-good: more video formats in the native window'
             'gst-libav: more video formats in the native window')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('0010b2567c65096232730508db5504fa3ee05341ce0f07de9479a7d17c05e1d9')
+sha256sums=('155e0db828edf5e2551303e1adf041c2206df652ff83c7fc06ff45a193ac4b56')
 
 package() {
   cd "$pkgname-$pkgver"
