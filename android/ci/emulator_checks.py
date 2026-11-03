@@ -216,7 +216,14 @@ adb("shell", "input", "keyevent", "KEYCODE_WAKEUP", check=False)
 shot("02-deck")
 print("PROBE deck:", js(PROBE), flush=True)
 print(js("""window.__plog = []; for (const t of ['pointerdown','pointermove','pointerup','pointercancel','touchstart','touchend','touchcancel'])
-  addEventListener(t, e => { if (__plog.length < 40) __plog.push(t + ':' + Math.round(e.clientX ?? e.touches?.[0]?.clientX ?? -1) + ':' + ((e.target && e.target.className) || '')); }, true); 'ok'"""))
+  addEventListener(t, e => { if (__plog.length < 60) __plog.push(t + ':' + Math.round(e.clientX ?? e.touches?.[0]?.clientX ?? -1) + ':' + Math.round(e.clientY ?? -1) + ':' + ((e.target && e.target.className) || '')); }, true);
+addEventListener('error', e => __plog.push('ERR:' + e.message + '@' + e.lineno));
+addEventListener('unhandledrejection', e => __plog.push('REJ:' + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
+const of = window.fetch; window.fetch = (u, o) => { if (o && o.method === 'POST') __plog.push('POST ' + u + ' ' + o.body);
+  return of(u, o).then(r => { __plog.push('RES ' + u + ' ' + r.status); return r; }, e => { __plog.push('FETCHERR ' + u + ' ' + e); throw e; }); };
+new MutationObserver(() => __plog.push('TOAST ' + document.querySelector('#toast').textContent)).observe(document.querySelector('#toast'), {childList: true});
+for (const n of ['decide', 'flyOut', 'onTap', 'skip']) { const f = window[n]; if (typeof f === 'function') window[n] = function (...a) { __plog.push('CALL ' + n + ' ' + JSON.stringify(a)); try { return f.apply(this, a); } catch (e) { __plog.push('THROW ' + n + ' ' + e.stack); throw e; } }; }
+'ok'"""))
 
 # ------------------------------------------------- 3. real swipe gesture
 size = re.search(r"(\d+)x(\d+)", adb("shell", "wm", "size")).groups()
@@ -235,6 +242,7 @@ shot("03-after-swipe")
 adb("shell", "input", "swipe", str(int(w * 0.5)), str(int(hgt * 0.45)), str(int(w * 0.9)), str(int(hgt * 0.44)), "450")
 time.sleep(1.2)
 after2 = {f["path"]: f["decision"] for f in json.loads(req("/api/files")[2])["files"] if f["decision"]}
+print("PROBE after right swipe:", js(PROBE), after2, flush=True)
 check(sum(1 for v in after2.values() if v == "keep") == 1, "swipe right keeps a file")
 
 # ------------------------------------------------- 4. review + back button
