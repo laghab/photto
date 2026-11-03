@@ -176,6 +176,7 @@ function makeCard(f) {
     <div class="stamp fav">★ FAVORITE</div>`;
   el.querySelector(".icon-btn").onclick = (e) => { e.stopPropagation(); openViewer(f); };
   el.addEventListener("animationend", () => el.classList.remove("enter"), { once: true });
+  setTimeout(() => el.classList.remove("enter"), 600);  // in case animations never tick (some WebViews)
   fillMedia(el, f);
   attachDrag(el, f);
   return el;

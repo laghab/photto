@@ -63,6 +63,37 @@ def req(path, body=None, headers=None, timeout=30):
         return resp.status, dict(resp.headers), resp.read()
 
 
+def js(expr):
+    """Evaluate JS in the app's WebView via its DevTools socket (debug builds only)."""
+    try:
+        import websocket  # websocket-client, installed by CI
+        pid = adb("shell", "pidof", PKG, check=False).strip().split()[0]
+        adb("forward", "tcp:9229", f"localabstract:webview_devtools_remote_{pid}", check=False)
+        pages = json.loads(urllib.request.urlopen("http://127.0.0.1:9229/json", timeout=10).read())
+        page = next(p for p in pages if p.get("url", "").startswith(BASE))
+        ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=15, suppress_origin=True)
+        ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate",
+                            "params": {"expression": expr, "returnByValue": True, "awaitPromise": True}}))
+        while True:
+            m = json.loads(ws.recv())
+            if m.get("id") == 1:
+                ws.close()
+                r = m["result"]
+                return r.get("result", {}).get("value", r)
+    except Exception as e:  # noqa: BLE001
+        return f"js() failed: {e!r}"
+
+
+PROBE = """JSON.stringify({ua: navigator.userAgent, reduce: matchMedia('(prefers-reduced-motion: reduce)').matches,
+ vw: innerWidth, vh: innerHeight,
+ deck: (r => [r.x, r.y, r.width, r.height])(document.querySelector('#deck').getBoundingClientRect()),
+ cards: [...document.querySelectorAll('#deck .card')].map(c => { const cs = getComputedStyle(c), r = c.getBoundingClientRect();
+   return {cls: c.className, rect: [r.x, r.y, r.width, r.height], op: cs.opacity, vis: cs.visibility, disp: cs.display, tf: cs.transform,
+           anims: c.getAnimations().map(a => [a.animationName || a.transitionProperty, a.playState, a.currentTime])}; }),
+ hit: (e => e && (e.className || e.tagName))(document.elementFromPoint(innerWidth / 2, innerHeight * 0.45)),
+ log: window.__plog || null})"""
+
+
 def png(w, h, rgb):
     raw = b"".join(b"\x00" + bytes(rgb) * w for _ in range(h))
     def chunk(t, d):
@@ -183,6 +214,9 @@ req("/api/decide", {"path": "notes.md", "decision": None})  # deterministic star
 time.sleep(1)
 adb("shell", "input", "keyevent", "KEYCODE_WAKEUP", check=False)
 shot("02-deck")
+print("PROBE deck:", js(PROBE), flush=True)
+print(js("""window.__plog = []; for (const t of ['pointerdown','pointermove','pointerup','pointercancel','touchstart','touchend','touchcancel'])
+  addEventListener(t, e => { if (__plog.length < 40) __plog.push(t + ':' + Math.round(e.clientX ?? e.touches?.[0]?.clientX ?? -1) + ':' + ((e.target && e.target.className) || '')); }, true); 'ok'"""))
 
 # ------------------------------------------------- 3. real swipe gesture
 size = re.search(r"(\d+)x(\d+)", adb("shell", "wm", "size")).groups()
@@ -192,8 +226,9 @@ adb("shell", "input", "swipe", str(int(w * 0.5)), str(int(hgt * 0.45)), str(int(
 time.sleep(1.5)
 after = {f["path"]: f["decision"] for f in json.loads(req("/api/files")[2])["files"] if f["decision"]}
 swiped = [p for p in after if p not in before]
+print("PROBE after swipe:", js(PROBE), flush=True)
 if not swiped:  # keep the rest of the run useful
-    swiped = ["orange.png"]; req("/api/decide", {"path": "orange.png", "decision": "delete"})
+    swiped = ["orange.png"]; req("/api/decide", {"path": "orange.png", "decision": "delete"}); after["orange.png"] = "delete"
 check(len(swiped) == 1 and after[swiped[0]] == "delete", f"swipe left marks a file for deletion {swiped}")
 shot("03-after-swipe")
 

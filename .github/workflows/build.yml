@@ -114,6 +114,7 @@ jobs:
   android-emulator:
     needs: android
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -121,6 +122,7 @@ jobs:
       - name: Media fixtures
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+          python3 -m pip install -q --break-system-packages websocket-client
           mkdir -p fixtures
           ffmpeg -loglevel error -f lavfi -i testsrc=size=640x360:rate=25 -t 3 -pix_fmt yuv420p fixtures/clip.mp4
           ffmpeg -loglevel error -f lavfi -i "sine=frequency=440:duration=2" fixtures/tone.mp3
@@ -143,7 +145,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: python3 android/ci/emulator_checks.py
+          script: timeout 900 python3 android/ci/emulator_checks.py
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: android-screenshots, path: "test-output/*.png\ntest-output/*.txt" }
