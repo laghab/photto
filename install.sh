@@ -42,6 +42,7 @@ cp "$SRC/photto.py" "$LIB/"
 cp -r "$SRC/static" "$LIB/"
 cp "$SRC/LICENSE" "$LIB/" 2>/dev/null || true
 
+rm -f "$BIN/photto"   # may be an old symlink; never write through it
 cat > "$BIN/photto" <<EOF
 #!/bin/sh
 exec python3 "$LIB/photto.py" "\$@"

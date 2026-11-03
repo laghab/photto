@@ -16,7 +16,7 @@ optdepends=('ffmpeg: video thumbnails and info'
             'gst-plugins-good: more video formats in the native window'
             'gst-libav: more video formats in the native window')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('21ff7ee3735d7a199a07b8f926061b804f843cad9991c2ce949e1f31aad91d2d')
 
 package() {
   cd "$pkgname-$pkgver"
