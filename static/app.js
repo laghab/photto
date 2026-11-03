@@ -305,13 +305,13 @@ function teardown(el) { const p = playerOf(el); if (p) { p.pause(); p.removeAttr
 // ------------------------------------------------------------- drag -----
 const TH = 110;
 function attachDrag(el, f) {
-  let sx = 0, sy = 0, dx = 0, dy = 0, active = false, moved = false;
+  let sx = 0, sy = 0, dx = 0, dy = 0, t0 = 0, active = false, moved = false;
   const stamps = { keep: el.querySelector(".stamp.keep"), del: el.querySelector(".stamp.del"), fav: el.querySelector(".stamp.fav") };
   const tint = el.querySelector(".tint");
 
   el.addEventListener("pointerdown", (e) => {
     if (!el.classList.contains("top") || e.button !== 0 || e.target.closest("button, .vbar")) return;
-    active = true; moved = false; sx = e.clientX; sy = e.clientY; dx = dy = 0;
+    active = true; moved = false; sx = e.clientX; sy = e.clientY; dx = dy = 0; t0 = performance.now();
     el.setPointerCapture(e.pointerId);
   });
   el.addEventListener("pointermove", (e) => {
@@ -322,16 +322,20 @@ function attachDrag(el, f) {
     el.style.transform = `translate(${dx}px, ${dy}px) rotate(${dx / 16}deg)`;
     paintStamps(stamps, tint, dx, dy);
   });
-  const end = () => {
+  const end = (e) => {
     if (!active) return;
     active = false;
     el.classList.remove("dragging");
+    // touch screens deliver few pointermoves on a quick flick: use where the finger lifted
+    if (e.type === "pointerup") { dx = e.clientX - sx; dy = e.clientY - sy; if (Math.hypot(dx, dy) > 6) moved = true; }
     if (!moved) { onTap(el); return; }
     const vertical = Math.abs(dy) > Math.abs(dx);
-    if (dx > TH && !vertical) decide("keep", dx, dy);
-    else if (dx < -TH && !vertical) decide("delete", dx, dy);
-    else if (dy < -TH && vertical) decide("favorite", dx, dy);
-    else if (dy > TH * 1.3 && vertical) skip();
+    const fast = Math.hypot(dx, dy) / Math.max(1, performance.now() - t0) > 0.6;  // px/ms
+    const th = fast ? TH * 0.45 : TH;
+    if (dx > th && !vertical) decide("keep", dx, dy);
+    else if (dx < -th && !vertical) decide("delete", dx, dy);
+    else if (dy < -th && vertical) decide("favorite", dx, dy);
+    else if (dy > th * 1.3 && vertical) skip();
     else { el.style.transform = ""; paintStamps(stamps, tint, 0, 0); }
   };
   el.addEventListener("pointerup", end);

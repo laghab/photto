@@ -234,8 +234,6 @@ time.sleep(1.5)
 after = {f["path"]: f["decision"] for f in json.loads(req("/api/files")[2])["files"] if f["decision"]}
 swiped = [p for p in after if p not in before]
 print("PROBE after swipe:", js(PROBE), flush=True)
-if not swiped:  # keep the rest of the run useful
-    swiped = ["orange.png"]; req("/api/decide", {"path": "orange.png", "decision": "delete"}); after["orange.png"] = "delete"
 check(len(swiped) == 1 and after[swiped[0]] == "delete", f"swipe left marks a file for deletion {swiped}")
 shot("03-after-swipe")
 
@@ -262,7 +260,7 @@ adb("shell", "input", "keyevent", "KEYCODE_BACK")
 time.sleep(1)
 
 # ------------------------------------------------- 5. trash with system dialog
-doomed = swiped[0]
+doomed = swiped[0] if swiped else "orange.png"
 extra = "doc.pdf" if doomed == "notes.md" else "notes.md"  # a non-media file too
 req("/api/decide", {"path": extra, "decision": "delete"})
 holder = {}
