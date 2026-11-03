@@ -62,9 +62,12 @@ const fmtDur = (s) => {
   return (h ? `${h}:${String(m).padStart(2, "0")}` : `${m}`) + `:${String(x).padStart(2, "0")}`;
 };
 const shortPath = (p) => {
-  const t = p.replace(/^\/home\/[^/]+/, "~"), parts = t.split("/").filter(Boolean);
-  return parts.length > 3 ? "…/" + parts.slice(-2).join("/") : t;
+  const sep = p.includes("\\") && !p.includes("/") ? "\\" : "/";
+  const t = p.replace(/^\/home\/[^/]+/, "~").replace(/^\/storage\/emulated\/0/, "Phone");
+  const parts = t.split(/[\\/]/).filter(Boolean);
+  return parts.length > 3 ? "…" + sep + parts.slice(-2).join(sep) : t;
 };
+const baseName = (p) => p.split(/[\\/]/).filter(Boolean).pop() || p;
 const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
 let toastTimer;
 function toast(msg) {
@@ -249,7 +252,7 @@ function fillMedia(el, f) {
       break;
     }
     case "doc":
-      m.innerHTML = glyph(f, "Office document · press Enter to preview (needs LibreOffice) or O to open.", openBtn());
+      m.innerHTML = glyph(f, S.platform === "android" ? "Office document · tap Open to read it." : "Office document · press Enter to preview (needs LibreOffice) or O to open.", openBtn());
       wireOpen(m, f);
       break;
     default:
@@ -433,7 +436,7 @@ function openViewer(f) {
       } else if (f.kind === "pdf") {
         body.innerHTML = `<iframe src="${raw}"></iframe>`;
       } else {
-        body.innerHTML = glyph(f, "Install LibreOffice to preview Office documents here.", openBtn());
+        body.innerHTML = glyph(f, S.platform === "android" ? "No preview here. Use \u201cOpen in app\u201d to read it." : "Install LibreOffice to preview Office documents here.", openBtn());
         wireOpen(body, f);
       }
     }).catch(() => { body.innerHTML = glyph(f, "Couldn't preview this file.", openBtn()); wireOpen(body, f); });
@@ -604,6 +607,20 @@ async function load(reshuffle = true) {
   $("#scanning").classList.remove("hidden");
   let d;
   try { d = await api("/api/files"); } finally { $("#scanning").classList.add("hidden"); }
+  setPlatform(d.platform);
+  if (d.needsPermission) {
+    S.root = null; S.files = []; S.deck = [];
+    $("#welcomeTitle").textContent = "Allow access to your files";
+    $("#welcomeText").textContent = "photto needs \u201cAll files access\u201d to show and tidy your folders. Nothing leaves your phone.";
+    $("#welcomePick").textContent = "Allow access";
+    $("#welcomePick").onclick = () => api("/api/permission", {});
+    buildDeck();
+    return;
+  }
+  $("#welcomeTitle").textContent = "Pick a folder to tidy";
+  $("#welcomeText").textContent = "Swipe through every photo, video, song and document in it \u2014 keep, favorite or trash.";
+  $("#welcomePick").textContent = "Choose folder\u2026";
+  $("#welcomePick").onclick = openPicker;
   if (d.needsPick) {
     S.root = null; S.files = []; S.deck = [];
     $("#folder").textContent = "Pick a folder";
@@ -618,6 +635,7 @@ async function load(reshuffle = true) {
   if (reshuffle || !S.shuffleKey.size) S.files.forEach((f) => S.shuffleKey.set(f.path, Math.random()));
   else S.files.forEach((f) => { if (!S.shuffleKey.has(f.path)) S.shuffleKey.set(f.path, Math.random()); });
   S.root = d.root; S.recursive = d.recursive;
+  setPlatform(d.platform);
   $("#folder").textContent = shortPath(d.root);
   $("#folderBtn").title = `${d.root} — click to change folder (G)`;
   $("#scopeTag").textContent = d.recursive ? "+ subfolders" : "top only";
@@ -625,12 +643,26 @@ async function load(reshuffle = true) {
   buildDeck();
 }
 
+function setPlatform(pf) {
+  if (!pf || S.platform === pf) return;
+  S.platform = pf;
+  document.body.dataset.platform = pf;
+}
+
+// Android back button / Escape-like behaviour; returns true if something was closed.
+window.phottoBack = () => {
+  for (const [id, close] of [["#viewer", closeViewer], ["#picker", closePicker], ["#review", closeReview]]) {
+    if (!$(id).classList.contains("hidden")) { close(); return true; }
+  }
+  return false;
+};
+
 function renderWelcome(recent) {
   const box = $("#welcomeRecent"); box.innerHTML = "";
   for (const r of recent.slice(0, 5)) {
     const b = document.createElement("button");
     b.className = "recent-item";
-    b.innerHTML = `<b>${esc(r.split("/").filter(Boolean).pop() || r)}</b><small>${esc(shortPath(r))}</small>`;
+    b.innerHTML = `<b>${esc(baseName(r))}</b><small>${esc(shortPath(r))}</small>`;
     b.onclick = () => chooseFolder(r);
     box.appendChild(b);
   }

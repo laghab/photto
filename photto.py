@@ -28,12 +28,48 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 MAX_FILES = 100_000
+IS_WIN = os.name == "nt"
+FROZEN = getattr(sys, "frozen", False)  # PyInstaller build
 APP_DIR = Path(__file__).resolve().parent
-STATIC = APP_DIR / "static"
-CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "photto"
-STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "photto"
+STATIC = Path(getattr(sys, "_MEIPASS", APP_DIR)) / "static"
+if IS_WIN:
+    _local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "photto"
+    CACHE, STATE_DIR = _local / "cache", _local / "state"
+else:
+    CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "photto"
+    STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "photto"
+
+# Windows' registry-based guesses are unreliable (e.g. .js as text/plain), so pin the important ones.
+for _ext, _type in {".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml",
+                    ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mkv": "video/x-matroska",
+                    ".mov": "video/quicktime", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".flac": "audio/flac",
+                    ".opus": "audio/ogg", ".ogg": "audio/ogg", ".wav": "audio/wav", ".webp": "image/webp",
+                    ".avif": "image/avif", ".pdf": "application/pdf", ".json": "application/json"}.items():
+    mimetypes.add_type(_type, _ext)
+
+# No console window flashes for helper tools on Windows.
+NOWIN = {"creationflags": 0x08000000} if IS_WIN else {}
+
+
+def run_quiet(cmd, **kw):
+    return subprocess.run(cmd, **NOWIN, **kw)
+
+
+def open_path(path: Path, reveal: bool = False) -> None:
+    """Open a file with its default app, or show it in the file manager."""
+    if IS_WIN:
+        if reveal:
+            subprocess.Popen(["explorer", "/select,", str(path)])
+        else:
+            os.startfile(str(path))  # noqa: S606
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-R" if reveal else "--", str(path)])
+        return
+    subprocess.Popen(["xdg-open", str(path.parent if reveal else path)], stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
 
 IMAGE = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".svg", ".ico", ".jfif"}
 IMAGE_CONVERT = {".heic", ".heif", ".tif", ".tiff", ".cr2", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".psd", ".jxl"}
@@ -49,7 +85,20 @@ TEXT = {
 DOC = {".doc", ".docx", ".odt", ".rtf", ".xls", ".xlsx", ".ods", ".ppt", ".pptx", ".odp", ".epub"}
 ARCHIVE = {".zip", ".tar", ".gz", ".tgz", ".xz", ".bz2", ".zst", ".7z", ".rar", ".iso", ".deb", ".rpm", ".appimage"}
 
-SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".cache", ".Trash", ".Trash-1000"}
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".cache", ".Trash", ".Trash-1000",
+             "$RECYCLE.BIN", "System Volume Information", "$Recycle.Bin", "AppData"}
+
+
+def is_hidden(path: Path, name: str | None = None) -> bool:
+    name = name or path.name
+    if name.startswith("."):
+        return True
+    if IS_WIN:
+        try:
+            return bool(os.stat(path, follow_symlinks=False).st_file_attributes & 0x6)  # HIDDEN | SYSTEM
+        except (OSError, AttributeError):
+            return False
+    return False
 
 
 def kind_of(path: Path) -> str:
@@ -92,14 +141,33 @@ def human(n: float) -> str:
 
 # ---------------------------------------------------------------- trash ----
 
+def trash_windows(path: Path) -> None:
+    """Send to the Recycle Bin via SHFileOperationW (undoable)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", ctypes.c_uint), ("pFrom", wintypes.LPCWSTR),
+                    ("pTo", wintypes.LPCWSTR), ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wintypes.BOOL),
+                    ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", wintypes.LPCWSTR)]
+    FO_DELETE, FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 3, 0x4, 0x10, 0x40, 0x400
+    op = SHFILEOPSTRUCTW(wFunc=FO_DELETE, pFrom=str(path.resolve()) + "\0",
+                         fFlags=FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI)
+    rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    if rc != 0 or op.fAnyOperationsAborted or path.exists():
+        raise OSError(f"Recycle Bin refused the file (code {rc})")
+
+
 def trash(path: Path) -> None:
-    """Move to the freedesktop Trash. Prefer gio, fall back to the spec."""
+    """Move to the system trash: Recycle Bin on Windows; freedesktop Trash elsewhere."""
+    if IS_WIN:
+        return trash_windows(path)
     if shutil.which("gio"):
-        r = subprocess.run(["gio", "trash", "--", str(path)], capture_output=True, text=True)
+        r = run_quiet(["gio", "trash", "--", str(path)], capture_output=True, text=True)
         if r.returncode == 0:
             return
     if shutil.which("kioclient"):
-        r = subprocess.run(["kioclient", "move", str(path), "trash:/"], capture_output=True, text=True)
+        r = run_quiet(["kioclient", "move", str(path), "trash:/"], capture_output=True, text=True)
         if r.returncode == 0:
             return
     # Manual implementation of the freedesktop.org trash spec (home trash).
@@ -175,15 +243,15 @@ class Session:
     def iter_files(self):
         if not self.recursive:
             try:
-                yield from (p for p in self.root.iterdir() if self.include_hidden or not p.name.startswith("."))
+                yield from (p for p in self.root.iterdir() if self.include_hidden or not is_hidden(p))
             except OSError:
                 return
             return
         for dirpath, dirnames, filenames in os.walk(self.root, onerror=lambda e: None):
-            dirnames[:] = sorted(d for d in dirnames
-                                 if d not in SKIP_DIRS and (self.include_hidden or not d.startswith(".")))
+            dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and
+                                 (self.include_hidden or not is_hidden(Path(dirpath) / d, d)))
             for name in filenames:
-                if self.include_hidden or not name.startswith("."):
+                if self.include_hidden or not is_hidden(Path(dirpath) / name, name):
                     yield Path(dirpath) / name
 
     def scan(self) -> list[dict]:
@@ -200,7 +268,7 @@ class Session:
                 kind = kind_of(p)
             except OSError:
                 continue
-            rel = str(p.relative_to(self.root))
+            rel = p.relative_to(self.root).as_posix()
             out.append({
                 "path": rel,
                 "name": p.name,
@@ -236,10 +304,10 @@ def video_thumb(p: Path) -> Path | None:
     if out.exists():
         return out
     if shutil.which("ffmpegthumbnailer"):
-        subprocess.run(["ffmpegthumbnailer", "-i", str(p), "-o", str(out), "-s", "640", "-q", "8"],
+        run_quiet(["ffmpegthumbnailer", "-i", str(p), "-o", str(out), "-s", "640", "-q", "8"],
                        capture_output=True, timeout=30)
     elif shutil.which("ffmpeg"):
-        subprocess.run(["ffmpeg", "-y", "-ss", "1", "-i", str(p), "-frames:v", "1", "-vf", "scale=640:-2", str(out)],
+        run_quiet(["ffmpeg", "-y", "-ss", "1", "-i", str(p), "-frames:v", "1", "-vf", "scale=640:-2", str(out)],
                        capture_output=True, timeout=30)
     return out if out.exists() else None
 
@@ -260,7 +328,7 @@ def convert_image(p: Path) -> Path | None:
         tools.append(["convert", str(p) + "[0]", "-auto-orient", "-resize", "2400x2400>", str(out)])
     for cmd in tools:
         try:
-            subprocess.run(cmd, capture_output=True, timeout=60)
+            run_quiet(cmd, capture_output=True, timeout=60)
         except (subprocess.TimeoutExpired, OSError):
             continue
         if out.exists() and out.stat().st_size > 0:
@@ -279,7 +347,7 @@ def doc_preview(p: Path) -> Path | None:
     tmpdir = CACHE / f"lo-{secrets.token_hex(4)}"
     tmpdir.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.run([lo, "--headless", "--convert-to", "pdf", "--outdir", str(tmpdir), str(p)],
+        run_quiet([lo, "--headless", "--convert-to", "pdf", "--outdir", str(tmpdir), str(p)],
                        capture_output=True, timeout=120)
         produced = next(tmpdir.glob("*.pdf"), None)
         if produced:
@@ -297,7 +365,7 @@ def pdf_thumb(p: Path) -> Path | None:
         return out
     if shutil.which("pdftoppm"):
         base = str(out)[:-4]
-        subprocess.run(["pdftoppm", "-png", "-r", "110", "-f", "1", "-l", "1", "-singlefile", str(p), base],
+        run_quiet(["pdftoppm", "-png", "-r", "110", "-f", "1", "-l", "1", "-singlefile", str(p), base],
                        capture_output=True, timeout=30)
     return out if out.exists() else None
 
@@ -318,7 +386,7 @@ def image_thumb(p: Path) -> Path | None:
         if not shutil.which(cmd[0]):
             continue
         try:
-            subprocess.run(cmd, capture_output=True, timeout=30)
+            run_quiet(cmd, capture_output=True, timeout=30)
         except (subprocess.TimeoutExpired, OSError):
             continue
         if out.exists() and out.stat().st_size:
@@ -335,7 +403,7 @@ def pdf_pages(p: Path) -> int:
     if not shutil.which("pdfinfo"):
         return 0
     try:
-        r = subprocess.run(["pdfinfo", str(p)], capture_output=True, text=True, timeout=20)
+        r = run_quiet(["pdfinfo", str(p)], capture_output=True, text=True, timeout=20)
     except (subprocess.TimeoutExpired, OSError):
         return 0
     for line in r.stdout.splitlines():
@@ -349,7 +417,7 @@ def pdf_page(p: Path, n: int) -> Path | None:
     if out.exists():
         return out
     if shutil.which("pdftoppm"):
-        subprocess.run(["pdftoppm", "-png", "-scale-to", "1600", "-f", str(n), "-l", str(n), "-singlefile",
+        run_quiet(["pdftoppm", "-png", "-scale-to", "1600", "-f", str(n), "-l", str(n), "-singlefile",
                         str(p), str(out)[:-4]], capture_output=True, timeout=60)
     return out if out.exists() else None
 
@@ -376,7 +444,7 @@ def media_info(p: Path) -> dict:
     if not shutil.which("ffprobe"):
         return {}
     try:
-        r = subprocess.run(["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", str(p)],
+        r = run_quiet(["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", str(p)],
                            capture_output=True, text=True, timeout=15)
         d = json.loads(r.stdout or "{}")
     except (subprocess.TimeoutExpired, ValueError, OSError):
@@ -403,7 +471,7 @@ def list_dirs(path: Path, include_hidden: bool) -> dict:
     try:
         for e in os.scandir(path):
             try:
-                if e.is_dir() and (include_hidden or not e.name.startswith(".")):
+                if e.is_dir() and (include_hidden or not is_hidden(Path(e.path), e.name)):
                     dirs.append({"name": e.name, "path": str(Path(e.path))})
             except OSError:
                 continue
@@ -415,13 +483,18 @@ def list_dirs(path: Path, include_hidden: bool) -> dict:
     for name in ("Pictures", "Videos", "Music", "Documents", "Downloads", "Desktop"):
         if (home / name).is_dir():
             places.append({"name": name, "path": str(home / name)})
-    for media in ("/run/media/" + os.environ.get("USER", ""), "/media", "/mnt"):
-        try:
-            for e in os.scandir(media):
-                if e.is_dir():
-                    places.append({"name": e.name, "path": e.path})
-        except OSError:
-            pass
+    if IS_WIN:
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            if os.path.isdir(f"{letter}:\\"):
+                places.append({"name": f"{letter}: drive", "path": f"{letter}:\\"})
+    else:
+        for media in ("/run/media/" + os.environ.get("USER", ""), "/media", "/mnt"):
+            try:
+                for e in os.scandir(media):
+                    if e.is_dir():
+                        places.append({"name": e.name, "path": e.path})
+            except OSError:
+                pass
     recent = [{"name": Path(r).name or r, "path": r} for r in load_recent()[:6]]
     return {"path": str(path), "parent": str(path.parent) if path != path.parent else None,
             "dirs": dirs, "places": places, "recent": recent}
@@ -434,6 +507,16 @@ def native_pick(start: Path) -> str | None:
     """Ask the desktop for a folder: GTK in native mode, else zenity / kdialog / yad."""
     if GTK_PICKER:
         return GTK_PICKER(start)
+    if IS_WIN:
+        ps = ("Add-Type -AssemblyName System.Windows.Forms;"
+              "$o = New-Object System.Windows.Forms.Form -Property @{TopMost=$true};"
+              "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
+              "$d.Description = 'Pick a folder to sort'; $d.UseDescriptionForTitle = $true;"
+              f"$d.SelectedPath = '{str(start)}';"
+              "if ($d.ShowDialog($o) -eq 'OK') { [Console]::Out.Write($d.SelectedPath) }")
+        r = run_quiet(["powershell", "-NoProfile", "-STA", "-Command", ps], capture_output=True, text=True)
+        out = r.stdout.strip()
+        return out or None
     cmds = []
     if shutil.which("kdialog") and os.environ.get("XDG_CURRENT_DESKTOP", "").upper().find("KDE") >= 0:
         cmds.append(["kdialog", "--getexistingdirectory", str(start)])
@@ -445,7 +528,7 @@ def native_pick(start: Path) -> str | None:
     if shutil.which("yad"):
         cmds.append(["yad", "--file", "--directory", f"--filename={start}/"])
     for cmd in cmds[:1]:
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = run_quiet(cmd, capture_output=True, text=True)
         out = r.stdout.strip()
         return out if r.returncode == 0 and out else None
     raise FileNotFoundError("no zenity/kdialog/yad")
@@ -579,6 +662,7 @@ class Handler(BaseHTTPRequestHandler):
                 "truncated": self.session.truncated,
                 "files": files,
                 "version": VERSION,
+                "platform": "windows" if IS_WIN else "linux",
             })
         if route == "/api/dirs":
             raw = q.get("path", [""])[0]
@@ -734,7 +818,7 @@ class Handler(BaseHTTPRequestHandler):
                                 target = dest / f"{p.stem} ({i}){p.suffix}"
                                 i += 1
                             shutil.move(str(p), target)
-                            new_rel = str(target.relative_to(s.root))
+                            new_rel = target.relative_to(s.root).as_posix()
                             s.decisions.pop(rel, None)
                             s.decisions[new_rel] = "favorite"
                             results["favorited"].append(new_rel)
@@ -746,9 +830,7 @@ class Handler(BaseHTTPRequestHandler):
             p = s.resolve(body.get("path", ""))
             if p is None or not p.exists():
                 return self.send_err(404)
-            target = p.parent if body.get("folder") else p
-            subprocess.Popen(["xdg-open", str(target)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             start_new_session=True)
+            open_path(p, reveal=bool(body.get("folder")))
             return self.send_json({"ok": True})
 
         return self.send_err(404)
@@ -838,8 +920,30 @@ def run_native(url: str, srv: ThreadingHTTPServer) -> None:
     Gtk.main()
 
 
-def open_app_window(url: str) -> bool:
+def windows_browsers() -> list[str]:
+    roots = [os.environ.get(k, "") for k in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA")]
+    rels = [r"Microsoft\Edge\Application\msedge.exe", r"Google\Chrome\Application\chrome.exe",
+            r"BraveSoftware\Brave-Browser\Application\brave.exe", r"Chromium\Application\chrome.exe"]
+    return [str(Path(r) / rel) for rel in rels for r in roots if r and (Path(r) / rel).is_file()]
+
+
+def open_app_window(url: str, srv: ThreadingHTTPServer | None = None) -> bool:
     """A chrome-less Chromium-family app window. Returns False if none is installed."""
+    if IS_WIN:
+        exes = windows_browsers()
+        if not exes:
+            return False
+        # A private profile makes the window its own process, so we know when it closes.
+        profile = CACHE.parent / "window"
+        proc = subprocess.Popen([exes[0], f"--app={url}", "--window-size=1280,880", f"--user-data-dir={profile}",
+                                 "--no-first-run", "--no-default-browser-check", "--disable-features=Translate"])
+        if srv is not None:
+            def wait_and_quit():
+                proc.wait()
+                if time.monotonic() - LAST_PING[0] > 3:  # window really gone, not handed off
+                    srv.shutdown()
+            threading.Thread(target=wait_and_quit, daemon=True).start()
+        return True
     for b in CHROMIUMS:
         exe = shutil.which(b)
         if exe:
@@ -860,14 +964,22 @@ def watchdog(srv: ThreadingHTTPServer, idle: float) -> None:
 
 def notify_error(msg: str) -> None:
     print(f"photto: {msg}", file=sys.stderr)
+    if IS_WIN:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, msg, "photto", 0x10)
+        return
     if not sys.stderr.isatty():
         for cmd in (["notify-send", "-a", "photto", "photto", msg], ["zenity", "--error", "--text", msg]):
             if shutil.which(cmd[0]):
-                subprocess.run(cmd, capture_output=True)
+                run_quiet(cmd, capture_output=True)
                 break
 
 
 def main() -> None:
+    if sys.stdout is None:  # windowed .exe has no console
+        sys.stdout = open(os.devnull, "w")  # noqa: SIM115
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")  # noqa: SIM115
     ap = argparse.ArgumentParser(prog="photto", description="Swipe through files: keep, favorite or trash.")
     ap.add_argument("dir", nargs="?", help="folder to sort (default: current folder; from the app menu: pick one)")
     ap.add_argument("-t", "--top-only", action="store_true", help="only this folder, not its subfolders")
@@ -880,8 +992,11 @@ def main() -> None:
                     help="how to show the UI (default: native GTK window, else browser app window, else browser)")
     ap.add_argument("--browser", action="store_true", help="same as --window browser")
     ap.add_argument("--no-browser", action="store_true", help="same as --window none (just print the URL)")
+    ap.add_argument("--token", help=argparse.SUPPRESS)  # fixed token, for automated tests
     ap.add_argument("--version", action="version", version=f"photto {VERSION}")
     args = ap.parse_args()
+    if FROZEN and not args.dir:
+        args.gui = True  # double-clicked .exe / Start Menu
     mode = "browser" if args.browser else "none" if args.no_browser else args.window
 
     root: Path | None = None
@@ -895,11 +1010,13 @@ def main() -> None:
 
     Handler.include_hidden = args.all
     Handler.session = Session(root, not args.top_only, args.all) if root else None
-    Handler.token = secrets.token_urlsafe(18)
+    Handler.token = args.token or secrets.token_urlsafe(18)
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     srv.daemon_threads = True
     url = f"http://127.0.0.1:{srv.server_address[1]}/#t={Handler.token}"
 
+    if mode == "auto" and IS_WIN:
+        mode = "app"
     if mode == "auto":
         mode = "native" if have_webkit() else "app" if any(shutil.which(b) for b in CHROMIUMS) else "browser"
     if mode == "native" and not have_webkit():
@@ -920,7 +1037,7 @@ def main() -> None:
         srv.server_close()
         return
 
-    if mode == "app" and not open_app_window(url):
+    if mode == "app" and not open_app_window(url, srv):
         mode = "browser"
     if mode == "browser":
         webbrowser.open(url)

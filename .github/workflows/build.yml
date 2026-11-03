@@ -1,0 +1,183 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Syntax checks
+        run: |
+          python -m py_compile photto.py
+          node --check static/app.js
+          bash -n install.sh uninstall.sh
+      - name: API smoke test
+        run: |
+          mkdir -p /tmp/t/sub && echo hi > /tmp/t/a.txt && echo b > /tmp/t/sub/b.md
+          python photto.py /tmp/t --window none --port 8799 --token tt &
+          sleep 2
+          curl -fs -H "X-Token: tt" localhost:8799/api/files | python -c "import json,sys; d=json.load(sys.stdin); p=sorted(f['path'] for f in d['files']); print(p); assert p==['a.txt','sub/b.md']"
+          curl -fs localhost:8799/ | grep -q photto
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Version
+        id: v
+        shell: bash
+        run: echo "version=$(python -c "import re;print(re.search(r'VERSION = \"(.+?)\"',open('photto.py').read())[1])")" >> "$GITHUB_OUTPUT"
+      - name: Build photto.exe
+        run: |
+          pip install pyinstaller==6.11.1
+          pyinstaller --noconfirm --onefile --windowed --name photto --icon data/photto.ico --add-data "static;static" photto.py
+          pyinstaller --noconfirm --onedir --windowed --name photto --icon data/photto.ico --add-data "static;static" --distpath build photto.py
+      - name: Smoke test on Windows
+        run: python packaging/windows/smoke_test.py dist\photto.exe
+      - name: Build installer
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup --no-progress -y }
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc /DAppVersion=${{ steps.v.outputs.version }} /DSourceDir=..\..\build\photto packaging\windows\photto.iss
+      - name: Test installer (silent install, launch, uninstall)
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist\photto-setup-*.exe | Select-Object -First 1
+          Start-Process $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/TASKS=contextmenu" -Wait
+          $exe = "$env:LOCALAPPDATA\Programs\photto\photto.exe"
+          if (-not (Test-Path $exe)) { throw "photto.exe not installed" }
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\photto.lnk")) { throw "no Start Menu shortcut" }
+          $cmd = (Get-ItemProperty "HKCU:\Software\Classes\Directory\shell\photto\command").'(default)'
+          Write-Host "context menu: $cmd"
+          python packaging/windows/smoke_test.py $exe
+          Start-Process "$env:LOCALAPPDATA\Programs\photto\unins000.exe" -ArgumentList "/VERYSILENT" -Wait
+          Start-Sleep 3
+          if (Test-Path $exe) { throw "uninstall left photto.exe behind" }
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir -p out
+          cp dist/photto.exe "out/photto-${{ steps.v.outputs.version }}-windows-portable.exe"
+          cp dist/photto-setup-*.exe "out/photto-${{ steps.v.outputs.version }}-windows-setup.exe"
+      - uses: actions/upload-artifact@v4
+        with: { name: windows, path: out/* }
+
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: "8.10.2" }
+      - name: Version
+        id: v
+        run: echo "version=$(python3 -c "import re;print(re.search(r'VERSION = \"(.+?)\"',open('../photto.py').read())[1])")" >> "$GITHUB_OUTPUT"
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.PHOTTO_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/photto.p12"
+            echo "PHOTTO_KEYSTORE=$RUNNER_TEMP/photto.p12" >> "$GITHUB_ENV"
+          fi
+      - name: Build APKs
+        env:
+          PHOTTO_KEYSTORE_PASSWORD: ${{ secrets.PHOTTO_KEYSTORE_PASSWORD }}
+        run: gradle --no-daemon assembleDebug assembleRelease -PappVersion=${{ steps.v.outputs.version }}
+      - name: Collect
+        run: |
+          mkdir -p ../out
+          cp app/build/outputs/apk/release/app-release.apk "../out/photto-${{ steps.v.outputs.version }}-android.apk"
+      - uses: actions/upload-artifact@v4
+        with: { name: android, path: out/* }
+      - uses: actions/upload-artifact@v4
+        with: { name: android-debug-apk, path: android/app/build/outputs/apk/debug/app-debug.apk }
+
+  android-emulator:
+    needs: android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: android-debug-apk, path: apk }
+      - name: Media fixtures
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+          mkdir -p fixtures
+          ffmpeg -loglevel error -f lavfi -i testsrc=size=640x360:rate=25 -t 3 -pix_fmt yuv420p fixtures/clip.mp4
+          ffmpeg -loglevel error -f lavfi -i "sine=frequency=440:duration=2" fixtures/tone.mp3
+          ffmpeg -loglevel error -f lavfi -i "mandelbrot=size=1200x900" -frames:v 1 fixtures/photo.jpg
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          APK: ${{ github.workspace }}/apk/app-debug.apk
+          OUT: ${{ github.workspace }}/test-output
+          FIXTURES: ${{ github.workspace }}/fixtures
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: python3 android/ci/emulator_checks.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: android-screenshots, path: test-output/*.png }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: android-results, path: test-output/results.txt }
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, android, android-emulator]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          files=$(ls artifacts/windows/* artifacts/android/*)
+          notes="## Downloads
+
+          | Platform | File |
+          |---|---|
+          | **Windows** (10/11) | \`photto-*-windows-setup.exe\`: installer, adds Start Menu entry and *Sort with photto* folder menu. Or the portable \`.exe\`. |
+          | **Android** (11+) | \`photto-*-android.apk\`: sideload it, then allow *All files access* when asked. |
+          | **Linux** | \`curl -fsSL https://raw.githubusercontent.com/laghab/photto/main/install.sh \| bash\`, or the [PKGBUILD](https://github.com/laghab/photto/tree/main/packaging/arch) on Arch. |
+
+          Deleted files always go to the system trash: Recycle Bin, Android's trash, or the Linux Trash."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" $files --clobber
+          else
+            gh release create "$tag" $files --title "photto $tag" --notes "$notes"
+          fi
