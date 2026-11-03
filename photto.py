@@ -28,7 +28,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 MAX_FILES = 100_000
 APP_DIR = Path(__file__).resolve().parent
 STATIC = APP_DIR / "static"
