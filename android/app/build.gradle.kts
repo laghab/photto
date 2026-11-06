@@ -3,7 +3,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-val appVersion: String = (project.findProperty("appVersion") as String?) ?: "1.1.0"
+val appVersion: String = (project.findProperty("appVersion") as String?) ?: "1.2.0"
 val parts = appVersion.split(".").map { it.toIntOrNull() ?: 0 }
 val versionNumber = parts.getOrElse(0) { 0 } * 10000 + parts.getOrElse(1) { 0 } * 100 + parts.getOrElse(2) { 0 }
 

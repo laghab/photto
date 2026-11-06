@@ -34,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from sift_ocr import TextJobs, IMAGE_EXTENSIONS as OCR_IMAGES, VIDEO_EXTENSIONS as OCR_VIDEOS
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 MAX_FILES = 100_000
 MAX_PAGE_SIZE = 500
 DEFAULT_PAGE_SIZE = 200
