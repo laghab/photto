@@ -500,6 +500,8 @@ body {
   background: #ffffff;
 }
 .brand h1 { font-weight: 750; font-style: normal; letter-spacing: .08em; }
+.brand > div { min-width: 0; }
+.brand .folder { max-width: 100%; }
 .logo i:first-child { background: #8da9e8; }
 .logo i:last-child { background: var(--accent); box-shadow: none; }
 .folder { color: var(--muted); }
@@ -558,6 +560,8 @@ kbd { background: #fff; border-color: var(--line); color: #4f5c6e; }
 .text-row { border-radius: 12px; background: #fff; }
 .text-results { scrollbar-color: #c5ceda transparent; }
 .viewer { background: #17202bea; }
+.viewer { color: #f3f5f8; }
+.tile .cap, .tile .undo { color: #fff; }
 .empty h2 { font-style: normal; font-weight: 700; letter-spacing: -.04em; }
 button:focus-visible, input:focus-visible, select:focus-visible {
   outline: 3px solid #3569d455; outline-offset: 2px;

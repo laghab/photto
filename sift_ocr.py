@@ -144,6 +144,10 @@ class TextJobs:
         return {"jobId": job_id, "total": len(files)}
 
     def _run(self, job, files, language, threshold, query):
+        if not files:
+            with self.lock:
+                job["state"] = "canceled" if job["cancel"].is_set() else "done"
+            return
         try:
             engine = tesseract_version()
         except Exception as exc:

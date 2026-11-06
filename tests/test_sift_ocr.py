@@ -14,6 +14,18 @@ FIXTURES = Path(__file__).parent / "fixtures" / "sift"
 
 
 class OcrContractTests(unittest.TestCase):
+    def test_empty_job_does_not_require_an_ocr_engine(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs = TextJobs(Path(tmp), Path(tmp) / "cache.sqlite3")
+            job = {"state": "running", "cancel": threading.Event()}
+            try:
+                with patch("sift_ocr.tesseract_version", side_effect=EngineUnavailable("missing")) as engine:
+                    jobs._run(job, [], "eng", 2, "")
+                    engine.assert_not_called()
+                self.assertEqual(job["state"], "done")
+            finally:
+                jobs.close()
+
     def test_meaningful_word_contract(self):
         self.assertEqual(meaningful_words("OK cat dog 48291 naïve"), ["cat", "dog", "naïve"])
         self.assertIsNone(match_reason("OK archive", 2))

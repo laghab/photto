@@ -950,6 +950,7 @@ async function updateTextJob() {
 }
 async function loadTextResults(more, state = "") {
   const r = await api(`/api/text/results?jobId=${encodeURIComponent(textJobId)}&offset=${textOffset}&limit=40`);
+  if (r.items.length) $("#textResults .text-empty")?.remove();
   for (const item of r.items) {
     const row = document.createElement("label"); row.className = "text-row";
     const check = document.createElement("input"); check.type = "checkbox"; check.checked = textSelected.has(item.path);
