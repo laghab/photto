@@ -148,7 +148,7 @@ jobs:
           arch: x86_64
           profile: pixel_6
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 2048 -cores 2 -no-snapshot
           script: timeout 900 python3 android/ci/emulator_checks.py
       - uses: actions/upload-artifact@v4
         if: always()
