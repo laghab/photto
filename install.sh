@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# photto installer: puts photto in your app menu and on your PATH (no root needed).
+# SIFT installer: puts SIFT in your app menu and on your PATH (no root needed).
 #
-#   curl -fsSL https://raw.githubusercontent.com/laghab/photto/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/laghab/sift/main/install.sh | bash
 #   ./install.sh            (from a git checkout)
 #
 # Installs into ~/.local by default. Set PREFIX=/usr/local (and run with sudo) for a system install.
 set -euo pipefail
 
-REPO="laghab/photto"
-REF="${PHOTTO_REF:-main}"
+REPO="laghab/sift"
+REF="${SIFT_REF:-main}"
 PREFIX="${PREFIX:-$HOME/.local}"
-LIB="$PREFIX/share/photto"
+LIB="$PREFIX/share/sift"
 BIN="$PREFIX/bin"
 APPS="$PREFIX/share/applications"
 ICONS="$PREFIX/share/icons/hicolor/scalable/apps"
@@ -30,7 +30,7 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "$(dirname "${BASH_SOURCE[0]}")/photto.p
   SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 else
   TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-  say "downloading photto ($REF)…"
+  say "downloading SIFT ($REF)…"
   curl -fsSL "https://github.com/$REPO/archive/$REF.tar.gz" | tar -xz -C "$TMP" --strip-components=1
   SRC="$TMP"
 fi
@@ -39,21 +39,22 @@ say "installing to $PREFIX"
 rm -rf "$LIB"
 mkdir -p "$LIB" "$BIN" "$APPS" "$ICONS"
 cp "$SRC/photto.py" "$LIB/"
+cp "$SRC/sift_ocr.py" "$LIB/"
 cp -r "$SRC/static" "$LIB/"
 cp "$SRC/LICENSE" "$LIB/" 2>/dev/null || true
 
-rm -f "$BIN/photto"   # may be an old symlink; never write through it
-cat > "$BIN/photto" <<EOF
+rm -f "$BIN/sift"   # may be an old symlink; never write through it
+cat > "$BIN/sift" <<EOF
 #!/bin/sh
 exec python3 "$LIB/photto.py" "\$@"
 EOF
-chmod +x "$BIN/photto"
+chmod +x "$BIN/sift"
 
-sed "s|^Exec=photto|Exec=$BIN/photto|" "$SRC/data/photto.desktop" > "$APPS/photto.desktop"
-cp "$SRC/data/photto.svg" "$ICONS/photto.svg"
+sed "s|^Exec=sift|Exec=$BIN/sift|" "$SRC/data/sift.desktop" > "$APPS/sift.desktop"
+cp "$SRC/data/sift.svg" "$ICONS/sift.svg"
 command -v update-desktop-database >/dev/null && update-desktop-database -q "$APPS" 2>/dev/null || true
 command -v gtk-update-icon-cache  >/dev/null && gtk-update-icon-cache -q -t "$PREFIX/share/icons/hicolor" 2>/dev/null || true
-ok "photto installed: find it in your app menu, or run 'photto' in any folder"
+ok "SIFT installed: find it in your app menu, or run 'sift' in any folder"
 
 case ":$PATH:" in *":$BIN:"*) ;; *) say "note: $BIN is not on your PATH (only matters for the terminal command)";; esac
 

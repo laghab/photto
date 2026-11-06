@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>photto</title>
+<title>SIFT</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect x='14' y='18' width='62' height='74' rx='12' fill='%23ffb86b' transform='rotate(-10 45 55)'/><rect x='26' y='10' width='62' height='74' rx='12' fill='%23f4efe6'/></svg>">
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -14,7 +14,7 @@
   <div class="brand">
     <span class="logo"><i></i><i></i></span>
     <div>
-      <h1>photto</h1>
+      <h1>SIFT</h1>
       <button id="folderBtn" class="folder" title="Change folder (G)">
         <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
         <span id="folder">—</span><em id="scopeTag"></em><i>▾</i>
@@ -36,6 +36,7 @@
       <span>Review</span>
       <b id="delCount">0</b>
     </button>
+    <button id="findTextBtn" class="btn ghost sm">Find text</button>
   </div>
 </header>
 
@@ -44,7 +45,10 @@
   <p id="progressText" class="progress-text"></p>
 
   <div id="deck" class="deck"></div>
-  <div id="scanning" class="scanning hidden"><div class="loading"></div><p>Scanning files…</p></div>
+  <div id="skeleton" class="skeleton hidden" aria-hidden="true">
+    <div class="sk-card"><div class="sk-media"></div><div class="sk-meta"><i></i><i></i></div></div>
+    <p id="skText" class="sk-text">Looking for files…</p>
+  </div>
 
   <div id="welcome" class="empty welcome hidden">
     <div class="empty-art"><span></span><span></span><span></span></div>
@@ -90,6 +94,20 @@
     </div>
   </div>
   <div id="viewerBody" class="viewer-body"></div>
+</div>
+
+<div id="textFinder" class="review hidden">
+  <div class="review-panel text-panel">
+    <div class="review-head"><div><h2>Find text</h2><p class="muted">Search images and sampled video locally on this device.</p></div><button id="textClose" class="btn ghost sm">Close</button></div>
+    <form id="textForm" class="text-options">
+      <label><input type="checkbox" id="textImages" checked> Images</label><label><input type="checkbox" id="textVideos" checked> Videos</label>
+      <label>Language <input id="textLanguage" value="eng" maxlength="32"></label><label>Minimum words <input id="textThreshold" type="number" min="0" max="100" value="2"></label>
+      <input id="textQuery" placeholder="Search recognized text…"><button class="btn primary">Scan</button>
+    </form>
+    <div class="text-progress"><span id="textStatus">Ready</span><button id="textCancel" class="btn ghost sm hidden">Cancel scan</button><button id="textClear" class="btn ghost sm">Clear OCR cache</button></div>
+    <div id="textResults" class="text-results"><p class="text-empty">Choose a scan scope, then search locally on this device. Matches will appear here.</p></div>
+    <div class="review-foot"><button id="textMore" class="btn ghost hidden">Load more</button><div class="foot-right"><button id="textCopy" class="btn ghost" disabled>Copy selected</button><button id="textMove" class="btn primary" disabled>Move selected</button></div></div>
+  </div>
 </div>
 
 <!-- review -->
@@ -149,7 +167,7 @@
   </div>
 </div>
 
-<div id="gone" class="gone hidden"><div><h2>photto has stopped</h2><p class="muted">The background process quit. Start photto again to keep going — your marks are saved.</p></div></div>
+<div id="gone" class="gone hidden"><div><h2>SIFT has stopped</h2><p class="muted">Start SIFT again to keep going — your marks are saved.</p></div></div>
 
 <div id="toast" class="toast"></div>
 

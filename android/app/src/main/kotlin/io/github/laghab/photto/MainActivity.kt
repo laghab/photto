@@ -52,7 +52,10 @@ class MainActivity : Activity() {
         server = MiniServer(testPort) { api.handle(it) }.also { it.start() }
         if (debuggable) {
             intent.getStringExtra("photto.test.root")?.let { root ->
-                if (hasAllFilesAccess() && File(root).isDirectory) api.session = api.Session(File(root), true)
+                // Canonicalize so the test-root session has the same state/index
+                // identity as a later /api/root call for the same folder.
+                val dir = File(root).canonicalFile
+                if (hasAllFilesAccess() && dir.isDirectory) api.session = api.Session(dir, true)
             }
             WebView.setWebContentsDebuggingEnabled(true)
             Log.i("photto", "server listening on 127.0.0.1:${server.port}")
@@ -90,7 +93,7 @@ class MainActivity : Activity() {
         }
         setContentView(web)
         hadAccess = hasAllFilesAccess()
-        web.loadUrl("$baseUrl#t=$token")
+        web.loadUrl("$baseUrl#t=$token" + if (debuggable) "&debug=1" else "")
     }
 
     override fun onResume() {
@@ -98,6 +101,7 @@ class MainActivity : Activity() {
         val now = hasAllFilesAccess()
         if (now != hadAccess) {
             hadAccess = now
+            if (!now) api.onPermissionLost()
             web.evaluateJavascript("typeof load === 'function' && load()", null)
         }
     }
@@ -113,6 +117,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        api.close()
         server.stop()
         web.destroy()
         super.onDestroy()
@@ -167,7 +172,7 @@ class MainActivity : Activity() {
         return query()
     }
 
-    /** Last resort for files Android won't trash: move them into a visible "photto trash" folder. */
+    /** Last resort for files Android won't trash: move them into the visible SIFT trash folder. */
     private fun moveToPhottoTrash(f: File): String? {
         val storage = Environment.getExternalStorageDirectory()
         val rel = if (f.absolutePath.startsWith(storage.absolutePath + "/")) f.parentFile!!.relativeTo(storage).path else "other"
@@ -180,7 +185,7 @@ class MainActivity : Activity() {
     /**
      * Move files to Android's system trash (restorable for ~30 days in Files / Photos).
      * Photos, videos and audio need one confirmation dialog per batch; other files are trashed via
-     * MediaStore directly when allowed, else moved to the "photto trash" folder.
+     * MediaStore directly when allowed, else moved to the SIFT trash folder.
      * Returns file -> error (null = success).
      */
     fun trashFiles(files: List<File>): Map<File, String?> {
@@ -238,6 +243,6 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQ_TRASH = 42
-        const val TRASH_DIR = "photto trash"
+        const val TRASH_DIR = "SIFT trash"
     }
 }

@@ -22,13 +22,15 @@ jobs:
           python -m py_compile photto.py
           node --check static/app.js
           bash -n install.sh uninstall.sh
+      - name: Python tests
+        run: python -m unittest discover -s tests -v
       - name: API smoke test
         run: |
           mkdir -p /tmp/t/sub && echo hi > /tmp/t/a.txt && echo b > /tmp/t/sub/b.md
           python photto.py /tmp/t --window none --port 8799 --token tt &
           sleep 2
           curl -fs -H "X-Token: tt" localhost:8799/api/files | python -c "import json,sys; d=json.load(sys.stdin); p=sorted(f['path'] for f in d['files']); print(p); assert p==['a.txt','sub/b.md']"
-          curl -fs localhost:8799/ | grep -q photto
+          curl -fs localhost:8799/ | grep -q SIFT
 
   windows:
     runs-on: windows-latest
@@ -40,39 +42,39 @@ jobs:
         id: v
         shell: bash
         run: echo "version=$(python -c "import re;print(re.search(r'VERSION = \"(.+?)\"',open('photto.py').read())[1])")" >> "$GITHUB_OUTPUT"
-      - name: Build photto.exe
+      - name: Build sift.exe
         run: |
           pip install pyinstaller==6.11.1
-          pyinstaller --noconfirm --onefile --windowed --name photto --icon data/photto.ico --add-data "static;static" photto.py
-          pyinstaller --noconfirm --onedir --windowed --name photto --icon data/photto.ico --add-data "static;static" --distpath bundle --workpath build-onedir photto.py
+          pyinstaller --noconfirm --onefile --windowed --name sift --icon data/sift.ico --add-data "static;static" photto.py
+          pyinstaller --noconfirm --onedir --windowed --name sift --icon data/sift.ico --add-data "static;static" --distpath bundle --workpath build-onedir photto.py
       - name: Smoke test on Windows
-        run: python packaging/windows/smoke_test.py dist\photto.exe
+        run: python packaging/windows/smoke_test.py dist\sift.exe
       - name: Build installer
         run: |
           if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup --no-progress -y }
           $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
           if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
-          & $iscc /DAppVersion=${{ steps.v.outputs.version }} /DSourceDir=..\..\bundle\photto packaging\windows\photto.iss
+          & $iscc /DAppVersion=${{ steps.v.outputs.version }} /DSourceDir=..\..\bundle\sift packaging\windows\sift.iss
       - name: Test installer (silent install, launch, uninstall)
         shell: pwsh
         run: |
-          $setup = Get-ChildItem dist\photto-setup-*.exe | Select-Object -First 1
+          $setup = Get-ChildItem dist\sift-*-windows-setup.exe | Select-Object -First 1
           Start-Process $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/TASKS=contextmenu" -Wait
-          $exe = "$env:LOCALAPPDATA\Programs\photto\photto.exe"
-          if (-not (Test-Path $exe)) { throw "photto.exe not installed" }
-          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\photto.lnk")) { throw "no Start Menu shortcut" }
-          $cmd = (Get-ItemProperty "HKCU:\Software\Classes\Directory\shell\photto\command").'(default)'
+          $exe = "$env:LOCALAPPDATA\Programs\SIFT\sift.exe"
+          if (-not (Test-Path $exe)) { throw "sift.exe not installed" }
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\SIFT.lnk")) { throw "no Start Menu shortcut" }
+          $cmd = (Get-ItemProperty "HKCU:\Software\Classes\Directory\shell\sift\command").'(default)'
           Write-Host "context menu: $cmd"
           python packaging/windows/smoke_test.py $exe
-          Start-Process "$env:LOCALAPPDATA\Programs\photto\unins000.exe" -ArgumentList "/VERYSILENT" -Wait
+          Start-Process "$env:LOCALAPPDATA\Programs\SIFT\unins000.exe" -ArgumentList "/VERYSILENT" -Wait
           Start-Sleep 3
-          if (Test-Path $exe) { throw "uninstall left photto.exe behind" }
+          if (Test-Path $exe) { throw "uninstall left sift.exe behind" }
       - name: Collect
         shell: bash
         run: |
           mkdir -p out
-          cp dist/photto.exe "out/photto-${{ steps.v.outputs.version }}-windows-portable.exe"
-          cp dist/photto-setup-*.exe "out/photto-${{ steps.v.outputs.version }}-windows-setup.exe"
+          cp dist/sift.exe "out/sift-${{ steps.v.outputs.version }}-windows-portable.exe"
+          cp dist/sift-*-windows-setup.exe "out/sift-${{ steps.v.outputs.version }}-windows-setup.exe"
       - uses: actions/upload-artifact@v4
         with: { name: windows, path: out/* }
 
@@ -101,11 +103,11 @@ jobs:
       - name: Build APKs
         env:
           PHOTTO_KEYSTORE_PASSWORD: ${{ secrets.PHOTTO_KEYSTORE_PASSWORD }}
-        run: gradle --no-daemon assembleDebug assembleRelease -PappVersion=${{ steps.v.outputs.version }}
+        run: gradle --no-daemon testDebugUnitTest assembleDebug assembleRelease -PappVersion=${{ steps.v.outputs.version }}
       - name: Collect
         run: |
           mkdir -p ../out
-          cp app/build/outputs/apk/release/app-release.apk "../out/photto-${{ steps.v.outputs.version }}-android.apk"
+          cp app/build/outputs/apk/release/app-release.apk "../out/sift-${{ steps.v.outputs.version }}-android.apk"
       - uses: actions/upload-artifact@v4
         with: { name: android, path: out/* }
       - uses: actions/upload-artifact@v4
@@ -148,10 +150,10 @@ jobs:
           script: timeout 900 python3 android/ci/emulator_checks.py
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: android-screenshots, path: "test-output/*.png\ntest-output/*.txt" }
+        with: { name: android-screenshots, path: "test-output/*.png\ntest-output/*.txt\ntest-output/perf.json\ntest-output/fixture.json" }
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: android-results, path: test-output/results.txt }
+        with: { name: android-results, path: "test-output/results.txt\ntest-output/perf.json\ntest-output/logcat.txt\ntest-output/fixture.json" }
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -173,13 +175,13 @@ jobs:
 
           | Platform | File |
           |---|---|
-          | **Windows** (10/11) | \`photto-*-windows-setup.exe\`: installer, adds Start Menu entry and *Sort with photto* folder menu. Or the portable \`.exe\`. |
-          | **Android** (11+) | \`photto-*-android.apk\`: sideload it, then allow *All files access* when asked. |
-          | **Linux** | \`curl -fsSL https://raw.githubusercontent.com/laghab/photto/main/install.sh \| bash\`, or the [PKGBUILD](https://github.com/laghab/photto/tree/main/packaging/arch) on Arch. |
+          | **Windows** (10/11) | \`sift-*-windows-setup.exe\`: installer, adds Start Menu entry and *Review with SIFT* folder menu. Or the portable \`.exe\`. |
+          | **Android** (11+) | \`sift-*-android.apk\`: sideload it, then allow *All files access* when asked. |
+          | **Linux** | \`curl -fsSL https://raw.githubusercontent.com/laghab/sift/main/install.sh \| bash\`, or the [PKGBUILD](https://github.com/laghab/sift/tree/main/packaging/arch) on Arch. |
 
           Deleted files always go to the system trash: Recycle Bin, Android's trash, or the Linux Trash."
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" $files --clobber
           else
-            gh release create "$tag" $files --title "photto $tag" --notes "$notes"
+            gh release create "$tag" $files --title "SIFT $tag" --notes "$notes"
           fi

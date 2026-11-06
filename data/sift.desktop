@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=SIFT
+GenericName=File Review and Text Search
+Comment=Review local files and find text in images and videos
+Exec=sift %f
+Icon=sift
+Terminal=false
+StartupNotify=true
+StartupWMClass=sift
+Categories=Utility;FileTools;Graphics;
+Keywords=photos;gallery;OCR;text;cleanup;review;declutter;

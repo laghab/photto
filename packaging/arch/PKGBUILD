@@ -1,10 +1,10 @@
 # Maintainer: laghab
-pkgname=photto
+pkgname=sift
 pkgver=1.1.0
 pkgrel=1
-pkgdesc="Swipe through photos, videos and files Tinder-style: keep, favorite or trash"
+pkgdesc="Local file review and OCR text search GUI"
 arch=('any')
-url="https://github.com/laghab/photto"
+url="https://github.com/laghab/sift"
 license=('MIT')
 depends=('python' 'python-gobject' 'webkit2gtk-4.1' 'glib2')
 optdepends=('ffmpeg: video thumbnails and info'
@@ -15,17 +15,19 @@ optdepends=('ffmpeg: video thumbnails and info'
             'libreoffice-fresh: previews of Office documents'
             'gst-plugins-good: more video formats in the native window'
             'gst-libav: more video formats in the native window')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('155e0db828edf5e2551303e1adf041c2206df652ff83c7fc06ff45a193ac4b56')
+makedepends=('git')
+source=("$pkgname::git+$url.git#tag=v$pkgver")
+sha256sums=('SKIP')
 
 package() {
-  cd "$pkgname-$pkgver"
-  install -Dm644 photto.py "$pkgdir/usr/lib/photto/photto.py"
-  cp -r static "$pkgdir/usr/lib/photto/"
+  cd "$pkgname"
+  install -Dm644 photto.py "$pkgdir/usr/lib/sift/photto.py"
+  install -Dm644 sift_ocr.py "$pkgdir/usr/lib/sift/sift_ocr.py"
+  cp -r static "$pkgdir/usr/lib/sift/"
   install -dm755 "$pkgdir/usr/bin"
-  printf '#!/bin/sh\nexec python3 /usr/lib/photto/photto.py "$@"\n' > "$pkgdir/usr/bin/photto"
-  chmod 755 "$pkgdir/usr/bin/photto"
-  install -Dm644 data/photto.desktop "$pkgdir/usr/share/applications/photto.desktop"
-  install -Dm644 data/photto.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/photto.svg"
+  printf '#!/bin/sh\nexec python3 /usr/lib/sift/photto.py "$@"\n' > "$pkgdir/usr/bin/sift"
+  chmod 755 "$pkgdir/usr/bin/sift"
+  install -Dm644 data/sift.desktop "$pkgdir/usr/share/applications/sift.desktop"
+  install -Dm644 data/sift.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/sift.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

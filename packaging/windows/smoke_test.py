@@ -52,7 +52,7 @@ try:
     check(True, "server started")
 
     st, h, body = req("/")
-    check(st == 200 and b"photto" in body, "UI html served")
+    check(st == 200 and b"SIFT" in body, "UI html served")
     st, h, body = req("/static/app.js")
     check("javascript" in h.get("Content-Type", ""), f"app.js content-type ({h.get('Content-Type')})")
 

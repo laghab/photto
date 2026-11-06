@@ -4,3 +4,7 @@ __pycache__/
 /src/
 *.pkg.tar.*
 *.tar.gz
+/android/.gradle/
+/android/.kotlin/
+/android/app/build/
+/test-output/

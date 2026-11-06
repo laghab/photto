@@ -1,7 +1,9 @@
 "use strict";
 
 // ------------------------------------------------------------ setup -----
-const TOKEN = new URLSearchParams(location.hash.slice(1)).get("t") || "";
+const HASH = new URLSearchParams(location.hash.slice(1));
+const TOKEN = HASH.get("t") || "";
+const DEBUG = HASH.get("debug") === "1";
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const url = (route, p) => `${route}?p=${encodeURIComponent(p)}&t=${encodeURIComponent(TOKEN)}`;
@@ -31,17 +33,61 @@ const COLORS = {
   doc: ["#8ec5ff", "#4f8bd6"], archive: ["#e2cfa9", "#9c8661"], other: ["#d4cdc2", "#8a8378"],
 };
 const colorVars = (k) => `--g1:${COLORS[k][0]};--g2:${COLORS[k][1]}`;
+const groupOf = (kind) => (GROUPS.find((g) => g.kinds && g.kinds.includes(kind)) || { id: "other" }).id;
+const inGroup = (f, g = S.filter) => { const k = GROUPS.find((x) => x.id === g).kinds; return !k || k.includes(f.kind); };
+const versionOf = (f) => `${Math.floor((f.mtime || 0) * 1000)}-${f.size || 0}`;
+const thumbUrl = (f, prio = 2) => `${url("/thumb", f.path)}&v=${encodeURIComponent(versionOf(f))}&prio=${prio}`;
+
+const PAGE = 100;
+const LOW_WATER = 12;
+const REVIEW_PAGE = 100;
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const T0 = performance.now();
+const PERF = { firstPageMs: null, firstCardMs: null, swipeToNextMs: null, reviewOpenMs: null };
+if (DEBUG) window.__phottoPerf = PERF;
+let firstPageMarked = false;
+let firstCardMarked = false;
+let reportTimer;
+
+function perfValue(name, value = performance.now() - T0) {
+  PERF[name] = Math.round(value * 10) / 10;
+  try { performance.mark(`photto:${name.replace(/Ms$/, "").replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())}`); } catch { /* ignore */ }
+  if (DEBUG) {
+    clearTimeout(reportTimer);
+    reportTimer = setTimeout(() => api("/api/debug/perf", PERF).catch(() => {}), 300);
+  }
+}
 
 const S = {
-  files: [],
+  root: null,
+  recursive: true,
+  platform: "",
   filter: "all",
   sort: localStorage.getItem("photto.sort") || "shuffle",
   deck: [],
+  cursor: null,
+  exhausted: false,
+  seen: new Set(),
+  filling: false,
+  fillAgain: false,
+  requestId: 0,
+  counts: null,
+  revision: 0,
+  scan: null,
+  truncated: false,
+  loading: false,
   history: [],
   els: new Map(), // path -> card element
   muted: false,
-  shuffleKey: new Map(),
+  swipeStart: 0,
+  review: { items: [], cursor: null, exhausted: false, loading: false, requestId: 0 },
 };
+let reviewTab = "delete";
+let reviewStart = 0;
+let tileObserver = null;
+let reviewSentinel = null;
+let scanTimer = null;
 
 // ------------------------------------------------------------ utils -----
 const fmtDate = (t) => {
@@ -74,22 +120,102 @@ function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2600);
 }
-const inGroup = (f, g = S.filter) => { const k = GROUPS.find((x) => x.id === g).kinds; return !k || k.includes(f.kind); };
 
-// ------------------------------------------------------------- deck -----
-function buildDeck() {
-  const list = S.files.filter((f) => !f.decision && inGroup(f));
-  const by = {
-    shuffle: (a, b) => S.shuffleKey.get(a.path) - S.shuffleKey.get(b.path),
-    newest: (a, b) => b.mtime - a.mtime,
-    oldest: (a, b) => a.mtime - b.mtime,
-    largest: (a, b) => b.size - a.size,
-    name: (a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }),
-  }[S.sort];
-  S.deck = list.sort(by);
+const countsTotal = (g = S.filter) => !S.counts ? 0
+  : g === "all" ? (S.counts.total || 0) : (S.counts.byGroup?.[g] || 0);
+const countsLeft = (g = S.filter) => !S.counts ? 0
+  : g === "all" ? (S.counts.undecided || 0) : (S.counts.undecidedByGroup?.[g] || 0);
+const decisionCount = (d) => S.counts?.byDecision?.[d] || 0;
+
+// ------------------------------------------------------- index state -----
+function setPlatform(pf) {
+  if (!pf || S.platform === pf) return;
+  S.platform = pf;
+  document.body.dataset.platform = pf;
+}
+
+// Start with the cheap visual profile on Android WebViews; the server confirms the platform
+// on the first response. This avoids expensive effects during the initial paint.
+if (/Android/i.test(navigator.userAgent)) setPlatform("android");
+
+function updateMeta(d) {
+  if (d.platform) setPlatform(d.platform);
+  if (d.counts) S.counts = d.counts;
+  if (typeof d.revision === "number") S.revision = d.revision;
+  if (d.scan) S.scan = d.scan;
+  if (typeof d.truncated === "boolean") S.truncated = d.truncated;
+  if (d.root !== undefined && d.root !== null) {
+    S.root = d.root;
+    S.recursive = d.recursive !== false;
+    $("#folder").textContent = shortPath(d.root);
+    $("#folderBtn").title = `${d.root} — click to change folder (G)`;
+    $("#scopeTag").textContent = S.recursive ? "+ subfolders" : "top only";
+    if (d.name) document.title = `SIFT · ${d.name}`;
+  }
+}
+
+function resetDeckState() {
+  S.deck = [];
+  S.cursor = null;
+  S.exhausted = false;
+  S.seen.clear();
+  S.filling = false;
+  S.fillAgain = false;
   for (const el of S.els.values()) el.remove();
   S.els.clear();
-  render();
+  $("#deck").innerHTML = "";
+}
+
+// ------------------------------------------------------------- deck -----
+async function fillDeck(first = false) {
+  if (!S.root && !first) return;
+  if (S.filling) { S.fillAgain = true; return; }
+  S.filling = true;
+  S.fillAgain = false;
+  const id = S.requestId;
+  try {
+    let guard = 0;
+    while (S.deck.length < LOW_WATER && !S.exhausted && guard++ < 3) {
+      const q = new URLSearchParams({
+        limit: String(PAGE), sort: S.sort, group: S.filter, decision: "none",
+      });
+      if (S.cursor) q.set("cursor", S.cursor);
+      const d = await api(`/api/files?${q}`);
+      if (id !== S.requestId) return;
+      if (handleNoRoot(d)) return;
+      updateMeta(d);
+      const incoming = d.files || [];
+      for (const f of incoming) {
+        if (S.seen.has(f.path)) continue;
+        S.seen.add(f.path);
+        S.deck.push(f);
+      }
+      S.cursor = d.nextCursor || null;
+      S.exhausted = !S.cursor;
+      if (first && incoming.length) { first = false; if (!firstPageMarked) { firstPageMarked = true; perfValue("firstPageMs"); } }
+      if (!incoming.length) break;
+      if (S.deck.length >= LOW_WATER) break;
+    }
+  } catch (e) {
+    if (id === S.requestId) toast("Couldn't load files: " + e.message);
+  } finally {
+    if (id === S.requestId) {
+      S.filling = false;
+      S.loading = false;
+      render();
+      updateChrome();
+      if (S.deck.length < LOW_WATER && !S.exhausted && S.cursor) fillDeck();
+      else if (S.fillAgain) { S.fillAgain = false; fillDeck(); }
+      if (S.scan?.state === "scanning") scheduleScanPoll();
+    }
+  }
+}
+
+function resetDeck() {
+  S.requestId++;
+  resetDeckState();
+  updateChrome();
+  fillDeck(true);
 }
 
 function render() {
@@ -106,51 +232,73 @@ function render() {
     el.style.transform = "";
     if (i === 0) activate(el, f); else deactivate(el);
   });
+  if (want.length && !firstCardMarked) { firstCardMarked = true; perfValue("firstCardMs"); }
   updateChrome();
 }
 
 function updateChrome() {
-  const scope = S.files.filter((f) => inGroup(f));
-  const done = scope.filter((f) => f.decision).length;
-  $("#progressBar").style.width = scope.length ? `${(done / scope.length) * 100}%` : "0";
-  $("#progressText").textContent = scope.length
-    ? `${S.deck.length.toLocaleString()} left · ${done.toLocaleString()} of ${scope.length.toLocaleString()} sorted`
-    : "";
+  const total = countsTotal();
+  const left = countsLeft();
+  const done = Math.max(0, total - left);
+  $("#progressBar").style.width = total ? `${(done / total) * 100}%` : "0";
+  if (!S.root) {
+    $("#progressText").textContent = "";
+  } else if (S.scan?.state === "scanning") {
+    $("#progressText").textContent = `${left.toLocaleString()} ready · scanning ${(S.scan.scanned || 0).toLocaleString()} files…`;
+  } else {
+    $("#progressText").textContent = total
+      ? `${left.toLocaleString()} left · ${done.toLocaleString()} of ${total.toLocaleString()} sorted`
+      : "";
+  }
 
-  const del = S.files.filter((f) => f.decision === "delete");
+  const del = decisionCount("delete");
   const b = $("#delCount");
-  b.textContent = del.length; b.classList.toggle("zero", !del.length);
+  b.textContent = del; b.classList.toggle("zero", !del);
 
   // filter chips
   const nav = $("#filters");
   nav.innerHTML = "";
   for (const g of GROUPS) {
-    const total = S.files.filter((f) => inGroup(f, g.id)).length;
-    const left = S.files.filter((f) => inGroup(f, g.id) && !f.decision).length;
+    const gTotal = countsTotal(g.id);
+    const gLeft = countsLeft(g.id);
     const btn = document.createElement("button");
     btn.className = g.id === S.filter ? "on" : "";
-    btn.disabled = !total && g.id !== "all";
-    btn.innerHTML = `${g.label}<small>${left}</small>`;
-    btn.onclick = () => { S.filter = g.id; buildDeck(); };
+    btn.disabled = !gTotal && g.id !== "all";
+    btn.innerHTML = `${g.label}<small>${gLeft}</small>`;
+    btn.onclick = () => { if (S.filter !== g.id) { S.filter = g.id; resetDeck(); } };
     nav.appendChild(btn);
   }
 
+  const scanning = S.scan?.state === "scanning";
   const empty = !S.deck.length;
-  $("#empty").classList.toggle("hidden", !empty);
+  const booting = S.loading && !S.root;
+  const showSkeleton = booting || (!!S.root && empty && (scanning || S.filling) && !S.exhausted);
+  $("#skeleton").classList.toggle("hidden", !showSkeleton);
+  const skText = $("#skText");
+  if (skText) skText.textContent = booting ? "Looking for files…" : scanning
+    ? `Scanning… ${(S.scan.scanned || 0).toLocaleString()} files found`
+    : "Loading files…";
+
+  const showEmpty = !!S.root && empty && !scanning && !S.filling && !showSkeleton && !!S.counts;
+  $("#empty").classList.toggle("hidden", !showEmpty);
   for (const id of ["#bDelete", "#bKeep", "#bFav", "#bSkip"]) $(id).disabled = empty;
   $("#bUndo").disabled = !S.history.length;
-  $("#welcome").classList.toggle("hidden", !!S.root);
+  $("#welcome").classList.toggle("hidden", !!S.root || booting);
   document.body.classList.toggle("no-root", !S.root);
   if (!S.root) { $("#empty").classList.add("hidden"); return; }
-  if (empty) {
-    const nothing = !scope.length;
-    $("#emptyTitle").textContent = nothing ? "Nothing here" : "All caught up";
-    $("#emptyText").textContent = nothing
-      ? "No files of this type in this folder."
-      : del.length ? `${del.length} file${del.length > 1 ? "s" : ""} (${fmtBytes(del.reduce((a, f) => a + f.size, 0))}) waiting in Review.`
-      : "You've gone through everything in this view.";
-    $("#emptyReview").classList.toggle("hidden", nothing);
-    $("#emptyReview").textContent = del.length ? "Review & clean up" : "See what you kept";
+  if (showEmpty) {
+    const nothing = !total;
+    const bytes = S.counts?.bytesByDecision?.delete || 0;
+    $("#emptyTitle").textContent = S.scan?.state === "error" ? "Couldn't finish reading"
+      : nothing ? "Nothing here" : "All caught up";
+    $("#emptyText").textContent = S.scan?.state === "error"
+      ? (S.scan.error || "Some of this folder could not be read.")
+      : nothing
+        ? "No files of this type in this folder."
+        : del ? `${del} file${del > 1 ? "s" : ""} (${fmtBytes(bytes)}) waiting in Review.`
+          : "You've gone through everything in this view.";
+    $("#emptyReview").classList.toggle("hidden", nothing || !del);
+    $("#emptyReview").textContent = del ? "Review & clean up" : "See what you kept";
     $("#emptyRestart").classList.toggle("hidden", nothing);
   }
 }
@@ -192,7 +340,7 @@ function fillMedia(el, f) {
   switch (f.kind) {
     case "image":
     case "image-convert": {
-      const src = url("/view", f.path);
+      const src = thumbUrl(f, 2);
       m.innerHTML = `<div class="blur"></div><div class="loading"></div><img alt="" draggable="false" decoding="async">`;
       const img = m.querySelector("img");
       img.onload = () => { m.querySelector(".loading")?.remove(); m.querySelector(".blur").style.backgroundImage = `url("${src}")`; };
@@ -201,13 +349,12 @@ function fillMedia(el, f) {
       break;
     }
     case "video": {
-      const poster = url("/thumb", f.path);
+      const poster = thumbUrl(f, 2);
       m.innerHTML = `<div class="blur" style="background-image:url('${poster}')"></div>
-        <video playsinline loop preload="metadata" poster="${poster}"></video>
+        <video playsinline loop preload="none" poster="${poster}"></video>
         <div class="badge-play hidden"></div>
         <div class="vbar"><div><i></i></div></div>`;
       const v = m.querySelector("video");
-      v.src = url("/raw", f.path);
       v.onerror = () => {
         m.innerHTML = `<div class="blur" style="background-image:url('${poster}')"></div>
           <img src="${poster}" alt="" draggable="false" onerror="this.remove()">
@@ -220,30 +367,28 @@ function fillMedia(el, f) {
         const r = bar.getBoundingClientRect();
         if (v.duration) v.currentTime = clamp((e.clientX - r.left) / r.width) * v.duration;
       };
-      loadInfo(el, f);
       break;
     }
     case "audio": {
       const bars = Array.from({ length: 16 }, (_, i) => `<span style="animation-delay:${(i * 137) % 900}ms;animation-duration:${600 + ((i * 211) % 700)}ms"></span>`).join("");
       m.innerHTML = `<div class="glyph"><div class="audio-viz">${bars}</div><div class="sub">click to play / pause</div></div>
-        <audio preload="metadata" loop></audio><div class="vbar"><div><i></i></div></div>`;
+        <audio preload="none" loop></audio><div class="vbar"><div><i></i></div></div>`;
       const a = m.querySelector("audio");
-      a.src = url("/raw", f.path);
       a.onplay = () => m.classList.add("playing");
       a.onpause = () => m.classList.remove("playing");
       a.ontimeupdate = () => { if (a.duration) m.querySelector(".vbar i").style.width = `${(a.currentTime / a.duration) * 100}%`; };
       const bar = m.querySelector(".vbar");
       bar.onpointerdown = (e) => { e.stopPropagation(); const r = bar.getBoundingClientRect(); if (a.duration) a.currentTime = clamp((e.clientX - r.left) / r.width) * a.duration; };
-      loadInfo(el, f);
       break;
     }
     case "pdf": {
+      const src = thumbUrl(f, 2);
       m.innerHTML = `<div class="loading"></div><img class="pdfthumb" alt="" draggable="false">`;
       const img = m.querySelector("img");
       img.style.background = "#fff";
       img.onload = () => m.querySelector(".loading")?.remove();
       img.onerror = () => { m.innerHTML = glyph(f, "PDF · press Enter to read it, or O to open.", openBtn()); wireOpen(m, f); };
-      img.src = url("/thumb", f.path);
+      img.src = src;
       break;
     }
     case "text":
@@ -292,6 +437,11 @@ function activate(el, f) {
   loadText(el, f);
   const p = playerOf(el);
   if (p) {
+    if (!p.getAttribute("src")) {
+      p.src = url("/raw", f.path);
+      if (p.tagName === "VIDEO") el._infoLoaded || (el._infoLoaded = true, loadInfo(el, f));
+      else el._infoLoaded || (el._infoLoaded = true, loadInfo(el, f));
+    }
     p.muted = S.muted;
     p.play().catch(() => {
       // autoplay with sound blocked until the user interacts: retry muted for video
@@ -300,14 +450,24 @@ function activate(el, f) {
   }
 }
 function deactivate(el) { const p = playerOf(el); if (p && !p.paused) p.pause(); }
-function teardown(el) { const p = playerOf(el); if (p) { p.pause(); p.removeAttribute("src"); p.load(); } }
+function teardown(el) {
+  const p = playerOf(el);
+  if (p) { p.pause(); p.removeAttribute("src"); p.load(); }
+  el.querySelectorAll("img").forEach((img) => img.removeAttribute("src"));
+}
 
 // ------------------------------------------------------------- drag -----
 const TH = 110;
 function attachDrag(el, f) {
-  let sx = 0, sy = 0, dx = 0, dy = 0, t0 = 0, active = false, moved = false;
+  let sx = 0, sy = 0, dx = 0, dy = 0, t0 = 0, active = false, moved = false, raf = 0;
   const stamps = { keep: el.querySelector(".stamp.keep"), del: el.querySelector(".stamp.del"), fav: el.querySelector(".stamp.fav") };
   const tint = el.querySelector(".tint");
+
+  const paint = () => {
+    raf = 0;
+    el.style.transform = `translate3d(${dx}px, ${dy}px, 0) rotate(${dx / 16}deg)`;
+    paintStamps(stamps, tint, dx, dy);
+  };
 
   el.addEventListener("pointerdown", (e) => {
     if (!el.classList.contains("top") || e.button !== 0 || e.target.closest("button, .vbar")) return;
@@ -317,18 +477,23 @@ function attachDrag(el, f) {
   el.addEventListener("pointermove", (e) => {
     if (!active) return;
     dx = e.clientX - sx; dy = e.clientY - sy;
-    if (!moved && Math.hypot(dx, dy) > 6) { moved = true; el.classList.add("dragging"); }
+    if (!moved && Math.hypot(dx, dy) > 6) {
+      moved = true; el.classList.add("dragging");
+    }
     if (!moved) return;
-    el.style.transform = `translate(${dx}px, ${dy}px) rotate(${dx / 16}deg)`;
-    paintStamps(stamps, tint, dx, dy);
+    if (!raf) raf = requestAnimationFrame(paint);
   });
   const end = (e) => {
     if (!active) return;
     active = false;
+    if (raf) { cancelAnimationFrame(raf); raf = 0; }
     el.classList.remove("dragging");
     // touch screens deliver few pointermoves on a quick flick: use where the finger lifted
     if (e.type === "pointerup") { dx = e.clientX - sx; dy = e.clientY - sy; if (Math.hypot(dx, dy) > 6) moved = true; }
     if (!moved) { onTap(el); return; }
+    // "Swipe to next card" is the app's response after the finger lifts, not the
+    // user's gesture duration. Start timing at release so the budget measures jank.
+    if (e.type === "pointerup") S.swipeStart = performance.now();
     const vertical = Math.abs(dy) > Math.abs(dx);
     const fast = Math.hypot(dx, dy) / Math.max(1, performance.now() - t0) > 0.6;  // px/ms
     const th = fast ? TH * 0.45 : TH;
@@ -336,7 +501,7 @@ function attachDrag(el, f) {
     else if (dx < -th && !vertical) decide("delete", dx, dy);
     else if (dy < -th && vertical) decide("favorite", dx, dy);
     else if (dy > th * 1.3 && vertical) skip();
-    else { el.style.transform = ""; paintStamps(stamps, tint, 0, 0); }
+    else { el.style.transform = ""; paintStamps(stamps, tint, 0, 0); S.swipeStart = 0; }
   };
   el.addEventListener("pointerup", end);
   el.addEventListener("pointercancel", end);
@@ -364,13 +529,39 @@ function flyOut(el, decision, dx = 0, dy = 0) {
   const w = window.innerWidth;
   const st = el.querySelector(decision === "keep" ? ".stamp.keep" : decision === "delete" ? ".stamp.del" : ".stamp.fav");
   if (st) st.style.opacity = 1;
-  el.style.transition = "transform .4s cubic-bezier(.3,.6,.4,1), opacity .4s";
+  el.style.transition = REDUCED ? "none" : "transform .4s cubic-bezier(.3,.6,.4,1), opacity .4s";
   const tx = decision === "keep" ? w : decision === "delete" ? -w : dx;
   const ty = decision === "favorite" ? -window.innerHeight : decision === "skip" ? window.innerHeight : dy;
-  el.style.transform = `translate(${tx}px, ${ty}px) rotate(${decision === "keep" ? 28 : decision === "delete" ? -28 : 0}deg)`;
+  el.style.transform = `translate3d(${tx}px, ${ty}px, 0) rotate(${decision === "keep" ? 28 : decision === "delete" ? -28 : 0}deg)`;
   el.style.opacity = "0";
   el.classList.remove("top");
-  setTimeout(() => { teardown(el); el.remove(); }, 420);
+  el.classList.add("flying");
+  setTimeout(() => { teardown(el); el.remove(); el.classList.remove("flying"); }, REDUCED ? 20 : 420);
+}
+
+function adjustCounts(f, newDecision, oldDecision) {
+  const c = S.counts;
+  if (!c) return;
+  newDecision = newDecision || null;
+  oldDecision = oldDecision || null;
+  if (newDecision === oldDecision) return;
+  const size = f.size || 0;
+  const byD = c.byDecision || (c.byDecision = { keep: 0, delete: 0, favorite: 0 });
+  const byB = c.bytesByDecision || (c.bytesByDecision = { keep: 0, delete: 0, favorite: 0 });
+  if (oldDecision) {
+    byD[oldDecision] = Math.max(0, (byD[oldDecision] || 0) - 1);
+    byB[oldDecision] = Math.max(0, (byB[oldDecision] || 0) - size);
+  }
+  if (newDecision) {
+    byD[newDecision] = (byD[newDecision] || 0) + 1;
+    byB[newDecision] = (byB[newDecision] || 0) + size;
+  }
+  const change = (oldDecision ? 1 : 0) - (newDecision ? 1 : 0);
+  c.undecided = Math.max(0, (c.undecided || 0) + change);
+  const g = groupOf(f.kind);
+  if (c.undecidedByGroup && c.undecidedByGroup[g] !== undefined) {
+    c.undecidedByGroup[g] = Math.max(0, c.undecidedByGroup[g] + change);
+  }
 }
 
 function decide(decision, dx = 0, dy = 0) {
@@ -379,15 +570,30 @@ function decide(decision, dx = 0, dy = 0) {
   const el = S.els.get(f.path);
   S.els.delete(f.path);
   if (el) { deactivate(el); flyOut(el, decision, dx, dy); }
-  S.history.push({ f, prev: f.decision, type: "decide" });
+  S.history.push({ f, prev: f.decision || null, type: "decide" });
+  adjustCounts(f, decision, f.decision || null);
   f.decision = decision;
-  api("/api/decide", { path: f.path, decision }).catch(() => toast("Couldn't save — is photto still running?"));
+  api("/api/decide", { path: f.path, decision }).catch(() => {
+    toast("Couldn't save — is SIFT still running?");
+    load();
+  });
   if (decision === "delete") { const b = $("#reviewBtn"); b.classList.remove("bump"); void b.offsetWidth; b.classList.add("bump"); }
   render();
+  if (S.swipeStart) {
+    const ms = performance.now() - S.swipeStart;
+    perfValue("swipeToNextMs", PERF.swipeToNextMs == null ? ms : Math.max(PERF.swipeToNextMs, ms));
+    S.swipeStart = 0;
+  }
+  if (S.deck.length < LOW_WATER) fillDeck();
 }
 
 function skip() {
-  if (S.deck.length < 2) { const el = S.els.get(S.deck[0]?.path); if (el) el.style.transform = ""; toast("This is the last one"); return; }
+  if (S.deck.length < 2) {
+    const el = S.els.get(S.deck[0]?.path); if (el) el.style.transform = "";
+    if (!S.exhausted && S.cursor) { fillDeck(); toast("Loading more…"); }
+    else toast("This is the last one");
+    return;
+  }
   const f = S.deck.shift();
   const el = S.els.get(f.path);
   S.els.delete(f.path);
@@ -404,12 +610,16 @@ function undo() {
     const i = S.deck.indexOf(h.f);
     if (i >= 0) S.deck.splice(i, 1);
   } else {
+    adjustCounts(h.f, h.prev || null, h.f.decision || null);
     h.f.decision = h.prev || null;
-    api("/api/decide", { path: h.f.path, decision: null }).catch(() => {});
+    api("/api/decide", { path: h.f.path, decision: h.prev || null }).catch(() => {});
   }
-  if (inGroup(h.f)) S.deck.unshift(h.f);
-  else toast(`Restored ${h.f.name} (in another filter)`);
+  if (inGroup(h.f)) S.deck.unshift(h.f); else toast(`Restored ${h.f.name} (in another filter)`);
   render();
+}
+
+async function refreshCounts() {
+  try { const d = await api("/api/scan"); updateMeta(d); updateChrome(); } catch { /* ignore */ }
 }
 
 async function openExternal(f, folder = false) {
@@ -459,58 +669,168 @@ function closeViewer() {
 }
 
 // ----------------------------------------------------------- review -----
-let reviewTab = "delete";
-function openReview() {
-  const top = S.deck[0]; if (top && S.els.get(top.path)) deactivate(S.els.get(top.path));
-  if (!S.files.some((f) => f.decision === "delete")) reviewTab = S.files.some((f) => f.decision === "favorite") ? "favorite" : reviewTab;
-  $("#review").classList.remove("hidden");
-  drawReview();
+function ensureTileObserver() {
+  if (tileObserver) tileObserver.disconnect();
+  tileObserver = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      const img = e.target.querySelector("img[data-src]");
+      if (img) { img.src = img.dataset.src; delete img.dataset.src; }
+      tileObserver.unobserve(e.target);
+    }
+  }, { root: $("#reviewGrid"), rootMargin: "200px 0px" });
 }
-function closeReview() {
-  $("#review").classList.add("hidden");
-  $("#reviewGrid").innerHTML = "";
-  const top = S.deck[0]; if (top && S.els.get(top.path)) activate(S.els.get(top.path), top);
-}
-function drawReview() {
-  const by = (d) => S.files.filter((f) => f.decision === d);
-  $("#tDel").textContent = by("delete").length;
-  $("#tFav").textContent = by("favorite").length;
-  $("#tKeep").textContent = by("keep").length;
-  document.querySelectorAll("#reviewTabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === reviewTab));
 
-  const list = by(reviewTab).sort((a, b) => b.size - a.size);
+function updateReviewTabs() {
+  $("#tDel").textContent = decisionCount("delete");
+  $("#tFav").textContent = decisionCount("favorite");
+  $("#tKeep").textContent = decisionCount("keep");
+  document.querySelectorAll("#reviewTabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === reviewTab));
+}
+
+function updateReviewFooter() {
+  const del = decisionCount("delete");
+  const fav = decisionCount("favorite");
+  const bytes = S.counts?.bytesByDecision?.delete || 0;
+  $("#freeText").textContent = del ? `frees ${fmtBytes(bytes)}` : "";
+  const favMove = $("#favMove").checked && fav;
+  const btn = $("#commitBtn");
+  btn.disabled = !del && !favMove;
+  btn.dataset.armed = "";
+  btn.textContent = del ? `Move ${del} file${del > 1 ? "s" : ""} to Trash` : favMove ? "Move favorites" : "Move to Trash";
+}
+
+function reviewEmptyText() {
+  return {
+    delete: "Nothing marked for deletion.",
+    favorite: "No favorites yet — swipe up on something you love.",
+    keep: "Nothing kept yet.",
+  }[reviewTab];
+}
+
+function appendReviewTiles(files) {
   const grid = $("#reviewGrid");
-  grid.innerHTML = list.length ? "" : `<div class="none">${{ delete: "Nothing marked for deletion.", favorite: "No favorites yet — swipe up on something you love.", keep: "Nothing kept yet." }[reviewTab]}</div>`;
+  const fragment = document.createDocumentFragment();
   const label = { delete: "Rescue", favorite: "Unfavorite", keep: "Un-keep" }[reviewTab];
-  for (const f of list) {
+  for (const f of files) {
+    S.review.items.push(f);
     const t = document.createElement("div");
     t.className = "tile";
     t.style.cssText = colorVars(f.kind);
     const thumb = ["image", "image-convert", "video", "pdf"].includes(f.kind);
-    t.innerHTML = `${thumb ? `<img loading="lazy" src="${url("/thumb", f.path)}" alt="">` : ""}
+    t.innerHTML = `${thumb ? `<img loading="lazy" alt="">` : ""}
       <div class="tg" ${thumb ? 'style="z-index:-1"' : ""}>${esc(f.ext || f.kind)}</div>
       <div class="cap">${esc(f.name)}<small>${esc(f.sizeH)}</small></div>
       <div class="undo">↩ ${label} — put back in the deck</div>`;
     const img = t.querySelector("img");
-    if (img) img.onerror = () => img.remove();
-    t.onclick = () => {
-      f.decision = null;
-      api("/api/decide", { path: f.path, decision: null }).catch(() => {});
-      if (inGroup(f)) { S.deck.unshift(f); }
-      t.classList.add("gone");
-      setTimeout(() => { render(); drawReview(); }, 220);
-    };
-    grid.appendChild(t);
+    if (img) { img.dataset.src = thumbUrl(f, 2); tileObserver.observe(t); }
+    t.onclick = () => undoReview(f, t);
+    fragment.appendChild(t);
   }
+  grid.appendChild(fragment);
+  ensureReviewSentinel();
+}
 
-  const del = by("delete");
-  const bytes = del.reduce((a, f) => a + f.size, 0);
-  $("#freeText").textContent = del.length ? `frees ${fmtBytes(bytes)}` : "";
-  const favMove = $("#favMove").checked && by("favorite").length;
-  const btn = $("#commitBtn");
-  btn.disabled = !del.length && !favMove;
-  btn.dataset.armed = "";
-  btn.textContent = del.length ? `Move ${del.length} file${del.length > 1 ? "s" : ""} to Trash` : favMove ? "Move favorites" : "Move to Trash";
+function ensureReviewSentinel() {
+  const grid = $("#reviewGrid");
+  if (!reviewSentinel) {
+    reviewSentinel = document.createElement("div");
+    reviewSentinel.id = "reviewSentinel";
+    reviewSentinel.className = "sentinel";
+  }
+  grid.appendChild(reviewSentinel);
+}
+
+async function loadReviewPage(initial = false) {
+  const r = S.review;
+  if (r.loading || r.exhausted) return;
+  const id = r.requestId;
+  r.loading = true;
+  try {
+    const q = new URLSearchParams({ limit: String(REVIEW_PAGE), sort: "largest", decision: reviewTab });
+    if (r.cursor) q.set("cursor", r.cursor);
+    const d = await api(`/api/files?${q}`);
+    if (id !== r.requestId) return;
+    updateMeta(d);
+    const incoming = d.files || [];
+    r.cursor = d.nextCursor || null;
+    r.exhausted = !r.cursor;
+    if (incoming.length) appendReviewTiles(incoming);
+    else if (initial) {
+      const grid = $("#reviewGrid");
+      grid.innerHTML = `<div class="none">${reviewEmptyText()}</div>`;
+    }
+    if (initial) perfValue("reviewOpenMs", performance.now() - reviewStart);
+    updateReviewTabs();
+    updateReviewFooter();
+    if (!r.exhausted) requestAnimationFrame(() => {
+      const grid = $("#reviewGrid");
+      if (grid.scrollHeight <= grid.clientHeight + 40) loadReviewPage();
+    });
+  } catch (e) {
+    if (id === r.requestId) toast("Couldn't load Review: " + e.message);
+  } finally {
+    if (id === r.requestId) r.loading = false;
+  }
+}
+
+function resetReview() {
+  const r = S.review;
+  r.requestId++;
+  r.items = [];
+  r.cursor = null;
+  r.exhausted = false;
+  r.loading = false;
+  reviewSentinel = null;
+  const grid = $("#reviewGrid");
+  grid.innerHTML = "";
+  grid.scrollTop = 0;
+  ensureTileObserver();
+  updateReviewTabs();
+  updateReviewFooter();
+  loadReviewPage(true);
+}
+
+function drawReview() { resetReview(); }
+
+function openReview() {
+  if (!S.root) return;
+  const top = S.deck[0]; if (top && S.els.get(top.path)) deactivate(S.els.get(top.path));
+  if (!decisionCount("delete")) reviewTab = decisionCount("favorite") ? "favorite" : decisionCount("keep") ? "keep" : "delete";
+  $("#review").classList.remove("hidden");
+  reviewStart = performance.now();
+  resetReview();
+}
+
+function closeReview() {
+  $("#review").classList.add("hidden");
+  S.review.requestId++;
+  if (tileObserver) { tileObserver.disconnect(); tileObserver = null; }
+  reviewSentinel = null;
+  $("#reviewGrid").innerHTML = "";
+  const top = S.deck[0]; if (top && S.els.get(top.path)) activate(S.els.get(top.path), top);
+}
+
+function undoReview(f, tile) {
+  const old = f.decision || reviewTab;
+  f.decision = null;
+  adjustCounts(f, null, old);
+  api("/api/decide", { path: f.path, decision: null }).catch(() => {
+    toast("Couldn't undo that mark");
+    load();
+  });
+  tile.classList.add("gone");
+  setTimeout(() => {
+    tile.remove();
+    const grid = $("#reviewGrid");
+    if (!grid.querySelector(".tile") && !S.review.cursor) {
+      grid.innerHTML = `<div class="none">${reviewEmptyText()}</div>`;
+    }
+  }, 220);
+  if (inGroup(f) && !S.deck.some((x) => x.path === f.path)) S.deck.unshift(f);
+  updateReviewTabs();
+  updateReviewFooter();
+  render();
 }
 
 async function commit() {
@@ -530,13 +850,13 @@ async function commit() {
     if (r.favorited.length) bits.push(`${r.favorited.length} favorites → Favorites/`);
     if (r.failed.length) bits.push(`${r.failed.length} failed`);
     toast(bits.join(" · ") || "Done");
-    if (r.failed.length) console.warn("photto: failed", r.failed);
+    if (r.failed.length) console.warn("SIFT: failed", r.failed);
     S.history = [];
-    await load(false);
-    drawReview();
+    await load();
+    resetReview();
   } catch (e) {
     toast("Something went wrong: " + e.message);
-    drawReview();
+    resetReview();
   }
 }
 
@@ -591,11 +911,75 @@ async function chooseFolder(path) {
     await api("/api/root", { path, recursive: $("#recursiveBox").checked });
   } catch { toast("Couldn't open that folder"); return; }
   $("#picker").classList.add("hidden");
-  S.history = []; S.shuffleKey.clear();
+  S.history = [];
   await load();
-  toast(`Now sorting ${shortPath(S.root)} · ${S.files.length.toLocaleString()} files`);
+  toast(`Now sorting ${shortPath(S.root)} · ${countsTotal("all").toLocaleString()} files`);
 }
 $("#folderBtn").onclick = openPicker;
+let textJobId = null, textPoll = null, textOffset = 0;
+const textSelected = new Set();
+function syncTextActions() {
+  const disabled = textSelected.size === 0;
+  $("#textCopy").disabled = disabled;
+  $("#textMove").disabled = disabled;
+}
+function textUrl(path, p) { return `${path}?p=${encodeURIComponent(p)}&t=${encodeURIComponent(TOKEN)}`; }
+function closeTextFinder() { $("#textFinder").classList.add("hidden"); }
+$("#findTextBtn").onclick = () => { if (!S.root) return openPicker(); $("#textFinder").classList.remove("hidden"); };
+$("#textClose").onclick = closeTextFinder;
+$("#textFinder").onclick = (e) => { if (e.target.id === "textFinder") closeTextFinder(); };
+$("#textForm").onsubmit = async (e) => {
+  e.preventDefault(); if (!S.root) return;
+  clearInterval(textPoll); textOffset = 0; textSelected.clear(); syncTextActions(); $("#textResults").replaceChildren();
+  try {
+    const r = await api("/api/text/start", {language: $("#textLanguage").value || "eng", threshold: Number($("#textThreshold").value || 2), query: $("#textQuery").value, images: $("#textImages").checked, videos: $("#textVideos").checked});
+    textJobId = r.jobId; $("#textCancel").classList.remove("hidden"); $("#textStatus").textContent = `Scanning ${r.total} files…`;
+    textPoll = setInterval(updateTextJob, 700); updateTextJob();
+  } catch (err) { $("#textStatus").textContent = err.message; }
+};
+async function updateTextJob() {
+  if (!textJobId) return;
+  try {
+    const s = await api(`/api/text/status?jobId=${encodeURIComponent(textJobId)}`);
+    const problem = s.errors.length ? ` · ${s.errors[0].error}` : "";
+    $("#textStatus").textContent = `${s.state}: ${s.done}/${s.total} checked · ${s.matches} matches · ${s.errors.length} errors${problem}`;
+    if (s.state !== "running") { clearInterval(textPoll); $("#textCancel").classList.add("hidden"); }
+    if (s.errors.length) $("#textStatus").title = s.errors.map((x) => x.error).join("\n");
+    await loadTextResults(false, s.state);
+  } catch { clearInterval(textPoll); }
+}
+async function loadTextResults(more, state = "") {
+  const r = await api(`/api/text/results?jobId=${encodeURIComponent(textJobId)}&offset=${textOffset}&limit=40`);
+  for (const item of r.items) {
+    const row = document.createElement("label"); row.className = "text-row";
+    const check = document.createElement("input"); check.type = "checkbox"; check.checked = textSelected.has(item.path);
+    check.onchange = () => { check.checked ? textSelected.add(item.path) : textSelected.delete(item.path); syncTextActions(); };
+    const img = document.createElement("img"); img.loading = "lazy"; img.src = textUrl("/thumb", item.path);
+    const content = document.createElement("div");
+    content.innerHTML = `<strong>${esc(item.path)}${item.timestamp == null ? "" : ` · ${item.timestamp}s`}</strong><p>${esc(item.text.slice(0, 300))}</p><small>${esc(item.reason)} match</small>`;
+    row.append(check, img, content); $("#textResults").append(row);
+  }
+  if (!$("#textResults .text-row")) {
+    const empty = document.createElement("p"); empty.className = "text-empty";
+    empty.textContent = state === "running" ? "Scanning locally. Matches will appear here as they are found." : textJobId ? "No matches found. Try a broader query or lower the minimum word count." : "Choose a scan scope, then search locally on this device. Matches will appear here.";
+    $("#textResults").replaceChildren(empty);
+  }
+  textOffset = r.offset + r.items.length; $("#textMore").classList.toggle("hidden", r.nextOffset == null);
+}
+$("#textMore").onclick = () => loadTextResults(true);
+$("#textCancel").onclick = async () => { if (textJobId) await api("/api/text/cancel", {jobId: textJobId}); };
+$("#textClear").onclick = async () => { if (confirm("Clear cached OCR text? Review marks will be kept.")) { await api("/api/text/clear", {}); toast("OCR cache cleared"); } };
+async function textAction(action) {
+  if (!textJobId || !textSelected.size) return toast("Select one or more matches first");
+  const paths = [...textSelected];
+  const preview = await api("/api/text/preview", {jobId: textJobId, paths});
+  const lines = preview.destinations.map((x) => `${x.path} → ${x.destination}`).join("\n");
+  if (!confirm(`${action === "copy" ? "Copy" : "Move"} ${paths.length} file(s) to SIFT_docs?\n\n${lines}`)) return;
+  const out = await api("/api/text/action", {jobId: textJobId, paths, action});
+  toast(`${out.copied} copied · ${out.moved} moved · ${out.failed} failed`);
+}
+$("#textCopy").onclick = () => textAction("copy").catch((e) => toast(e.message));
+$("#textMove").onclick = () => textAction("move").catch((e) => toast(e.message));
 $("#emptyPick").onclick = openPicker;
 $("#pickerClose").onclick = closePicker;
 $("#picker").onclick = (e) => { if (e.target.id === "picker") closePicker(); };
@@ -608,53 +992,99 @@ $("#nativePick").onclick = async () => {
 };
 
 // ------------------------------------------------------------- load -----
-async function load(reshuffle = true) {
-  $("#scanning").classList.remove("hidden");
-  let d;
-  try { d = await api("/api/files"); } finally { $("#scanning").classList.add("hidden"); }
-  setPlatform(d.platform);
+function handleNoRoot(d) {
   if (d.needsPermission) {
-    S.root = null; S.files = []; S.deck = [];
+    resetDeckState();
+    S.root = null; S.counts = null; S.scan = null;
     $("#welcomeTitle").textContent = "Allow access to your files";
-    $("#welcomeText").textContent = "photto needs \u201cAll files access\u201d to show and tidy your folders. Nothing leaves your phone.";
+    $("#welcomeText").textContent = "SIFT needs \u201cAll files access\u201d to show and organize your folders. Nothing leaves your phone.";
     $("#welcomePick").textContent = "Allow access";
     $("#welcomePick").onclick = () => api("/api/permission", {});
-    buildDeck();
-    return;
+    updateChrome();
+    return true;
   }
-  $("#welcomeTitle").textContent = "Pick a folder to tidy";
-  $("#welcomeText").textContent = "Swipe through every photo, video, song and document in it \u2014 keep, favorite or trash.";
-  $("#welcomePick").textContent = "Choose folder\u2026";
-  $("#welcomePick").onclick = openPicker;
   if (d.needsPick) {
-    S.root = null; S.files = []; S.deck = [];
+    resetDeckState();
+    S.root = null; S.counts = null; S.scan = null;
+    $("#welcomeTitle").textContent = "Pick a folder to tidy";
+    $("#welcomeText").textContent = "Swipe through every photo, video, song and document in it \u2014 keep, favorite or trash.";
+    $("#welcomePick").textContent = "Choose folder…";
+    $("#welcomePick").onclick = openPicker;
     $("#folder").textContent = "Pick a folder";
     $("#scopeTag").textContent = "";
     renderWelcome(d.recent || []);
-    buildDeck();
+    updateChrome();
     openPicker();
-    return;
+    return true;
   }
-  if (d.truncated) toast(`Big folder: showing the first ${d.files.length.toLocaleString()} files`);
-  S.files = d.files;
-  if (reshuffle || !S.shuffleKey.size) S.files.forEach((f) => S.shuffleKey.set(f.path, Math.random()));
-  else S.files.forEach((f) => { if (!S.shuffleKey.has(f.path)) S.shuffleKey.set(f.path, Math.random()); });
-  S.root = d.root; S.recursive = d.recursive;
-  setPlatform(d.platform);
-  $("#folder").textContent = shortPath(d.root);
-  $("#folderBtn").title = `${d.root} — click to change folder (G)`;
-  $("#scopeTag").textContent = d.recursive ? "+ subfolders" : "top only";
-  document.title = `photto · ${d.name}`;
-  buildDeck();
+  return false;
 }
 
-function setPlatform(pf) {
-  if (!pf || S.platform === pf) return;
-  S.platform = pf;
-  document.body.dataset.platform = pf;
+async function load() {
+  S.requestId++;
+  resetDeckState();
+  S.history = [];
+  S.counts = null;
+  S.scan = null;
+  S.root = null;
+  S.loading = true;
+  updateChrome();
+  await fillDeck(true);
+  if (S.scan?.state === "scanning") scheduleScanPoll();
 }
 
-// Android back button / Escape-like behaviour; returns true if something was closed.
+function scheduleScanPoll() {
+  clearTimeout(scanTimer);
+  if (!S.root || S.scan?.state !== "scanning") return;
+  scanTimer = setTimeout(pollScan, 700);
+}
+
+async function pollScan() {
+  if (!S.root) return;
+  try {
+    const wasScanning = S.scan?.state === "scanning";
+    const d = await api("/api/scan");
+    updateMeta(d);
+    updateChrome();
+    if (S.scan?.state === "scanning") {
+      if (S.deck.length < LOW_WATER) fillDeck();
+      scheduleScanPoll();
+    } else if (wasScanning) {
+      await reconcileAfterScan();
+    }
+  } catch {
+    scanTimer = setTimeout(pollScan, 1500);
+  }
+}
+
+async function reconcileAfterScan() {
+  const top = S.deck[0] || null;
+  // Preserve the top card only while the file still exists; a revalidation may
+  // have removed it, and keeping it would leave a card that can never be decided.
+  let keepTop = false;
+  if (top && !top.decision && inGroup(top)) {
+    try { await api(url("/info", top.path)); keepTop = true; } catch { keepTop = false; }
+  }
+  S.requestId++;
+  S.deck = [];
+  S.cursor = null;
+  S.exhausted = false;
+  S.seen.clear();
+  S.filling = false;
+  S.fillAgain = false;
+  for (const el of S.els.values()) el.remove();
+  S.els.clear();
+  $("#deck").innerHTML = "";
+  if (keepTop) {
+    S.deck.push(top);
+    S.seen.add(top.path);
+  }
+  await fillDeck(true);
+  updateChrome();
+}
+
+function setPlatformReset() { /* kept for symmetry with older clients */ }
+
 window.phottoBack = () => {
   for (const [id, close] of [["#viewer", closeViewer], ["#picker", closePicker], ["#review", closeReview]]) {
     if (!$(id).classList.contains("hidden")) { close(); return true; }
@@ -685,12 +1115,20 @@ $("#emptyRestart").onclick = async () => {
   if (!confirm("Forget all your keep/favorite/delete marks for this folder and start again? (No files are touched.)")) return;
   await api("/api/reset", {});
   S.history = [];
-  load();
+  await load();
 };
 $("#reviewClose").onclick = closeReview;
 $("#review").onclick = (e) => { if (e.target.id === "review") closeReview(); };
-$("#reviewTabs").onclick = (e) => { const b = e.target.closest("button"); if (b) { reviewTab = b.dataset.tab; drawReview(); } };
-$("#favMove").onchange = drawReview;
+$("#reviewGrid").addEventListener("scroll", () => {
+  if ($("#review").classList.contains("hidden")) return;
+  const g = $("#reviewGrid");
+  if (g.scrollHeight - g.scrollTop - g.clientHeight < 600) loadReviewPage();
+}, { passive: true });
+$("#reviewTabs").onclick = (e) => {
+  const b = e.target.closest("button");
+  if (b && b.dataset.tab !== reviewTab) { reviewTab = b.dataset.tab; resetReview(); }
+};
+$("#favMove").onchange = updateReviewFooter;
 $("#commitBtn").onclick = commit;
 $("#viewerClose").onclick = closeViewer;
 $("#viewerOpen").onclick = () => viewerFile && openExternal(viewerFile);
@@ -699,8 +1137,7 @@ const sortSel = $("#sort");
 sortSel.value = S.sort;
 sortSel.onchange = () => {
   S.sort = sortSel.value; localStorage.setItem("photto.sort", S.sort);
-  if (S.sort === "shuffle") S.files.forEach((f) => S.shuffleKey.set(f.path, Math.random()));
-  buildDeck(); sortSel.blur();
+  resetDeck(); sortSel.blur();
 };
 
 document.addEventListener("keydown", (e) => {
@@ -733,10 +1170,10 @@ document.addEventListener("keydown", (e) => {
 
 if (!TOKEN) {
   document.body.innerHTML = `<div style="margin:auto;text-align:center;font-family:sans-serif;color:#aaa">
-    Missing access token. Open the full URL printed in the terminal by <code>photto</code>.</div>`;
+    Missing access token. Open the full URL printed by the SIFT launcher.</div>`;
 } else {
   load().catch((e) => toast("Couldn't load files: " + e.message));
-  // heartbeat: lets photto quit by itself once this window is closed
+  // heartbeat: lets SIFT quit by itself once this window is closed
   let lost = 0;
   setInterval(() => {
     fetch("/api/ping", { headers: { "X-Token": TOKEN } })
